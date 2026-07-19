@@ -27,7 +27,9 @@ async function apiRequest<T>(
   }
 
   const headers = await getAuthHeaders();
-  const url = `${endpoint}${path}`;
+  // endpoint 末尾のスラッシュを除去して二重スラッシュを防止
+  const base = endpoint.replace(/\/+$/, "");
+  const url = `${base}${path}`;
 
   console.log(`[api] ${options.method || "GET"} ${path}`);
   console.log("[api] URL:", url);
