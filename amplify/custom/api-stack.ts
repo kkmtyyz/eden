@@ -65,13 +65,18 @@ export class ApiStack extends Construct {
     });
 
     // ─── S3 Vectors (ベクトル検索) ────────────────────────────────
+    // バケット名にスタック名のハッシュを含めて sandbox/本番で衝突しないようにする
+    const stackId = cdk.Fn.select(2, cdk.Fn.split("/", cdk.Aws.STACK_ID));
+    const shortHash = cdk.Fn.select(0, cdk.Fn.split("-", stackId));
+    const vectorBucketName = `eden-vec-${shortHash}`;
+
     const vectorBucket = new s3vectors.CfnVectorBucket(this, "VectorBucket", {
-      vectorBucketName: `eden-vectors-${cdk.Stack.of(this).account}-${cdk.Stack.of(this).region}`,
+      vectorBucketName,
     });
     vectorBucket.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
 
     const vectorIndex = new s3vectors.CfnIndex(this, "VectorIndex", {
-      vectorBucketName: vectorBucket.vectorBucketName!,
+      vectorBucketName,
       indexName: "eden-index",
       dataType: "float32",
       dimension: 1024,
@@ -139,7 +144,7 @@ export class ApiStack extends Construct {
         JOBS_TABLE: jobsTable.tableName,
         IMAGE_BUCKET: imageBucket.bucketName,
         REGISTER_QUEUE_URL: registerQueue.queueUrl,
-        EDEN_VECTOR_BUCKET: vectorBucket.vectorBucketName!,
+        EDEN_VECTOR_BUCKET: vectorBucketName,
         EDEN_VECTOR_INDEX: "eden-index",
       },
     };
