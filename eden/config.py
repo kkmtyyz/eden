@@ -29,7 +29,7 @@ TEXT_MATCH_RATIO: float = float(os.getenv("EDEN_TEXT_MATCH_RATIO", "0.7"))
 
 # ─── 画像処理 ─────────────────────────────────────────────────
 MAX_IMAGE_SIZE: int = int(os.getenv("EDEN_MAX_IMAGE_SIZE", "1024"))
-CROP_PAD: float = float(os.getenv("EDEN_CROP_PAD", "0.12"))
+CROP_PAD: float = float(os.getenv("EDEN_CROP_PAD", "0.06"))
 ROTATIONS: list[int] = [0, 90, 180, 270]
 TOP_K: int = int(os.getenv("EDEN_TOP_K", "20"))
 

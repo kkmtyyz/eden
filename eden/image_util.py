@@ -1,7 +1,8 @@
-"""画像ユーティリティ: JPEG変換、EXIF補正、リサイズ等。"""
+"""画像ユーティリティ: JPEG変換、EXIF補正、リサイズ、光正規化等。"""
 
 from io import BytesIO
 
+import numpy as np
 from PIL import Image, ImageOps
 
 from eden import config
@@ -38,3 +39,31 @@ def resize(img: Image.Image, max_size: int | None = None) -> Image.Image:
     img = img.copy()
     img.thumbnail((max_size, max_size))
     return img
+
+
+def normalize_lighting(img: Image.Image) -> Image.Image:
+    """CLAHE (Contrast Limited Adaptive Histogram Equalization) で光の正規化を行う。
+
+    照明条件の違いによる明暗差を軽減し、埋め込みベクトルの安定性を向上させる。
+    LAB色空間のL(輝度)チャネルにのみCLAHEを適用し、色情報は保持する。
+
+    Args:
+        img: 入力画像 (RGB)
+
+    Returns:
+        光正規化済み画像 (RGB)
+    """
+    import cv2
+
+    arr = np.array(img)
+
+    # RGB → LAB
+    lab = cv2.cvtColor(arr, cv2.COLOR_RGB2LAB)
+
+    # L チャネルに CLAHE 適用
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    lab[:, :, 0] = clahe.apply(lab[:, :, 0])
+
+    # LAB → RGB
+    out = cv2.cvtColor(lab, cv2.COLOR_LAB2RGB)
+    return Image.fromarray(out)

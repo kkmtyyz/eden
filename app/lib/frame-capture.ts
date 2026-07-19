@@ -7,14 +7,17 @@
  */
 
 const CAPTURE_INTERVAL_MS = 100;
-const MAX_FRAMES = 10;
+const MAX_FRAMES = 20;
 const SIMILARITY_THRESHOLD = 0.97; // これ以上類似していたら除外
+const BLUR_THRESHOLD = 50; // Laplacian variance がこれ以下ならブレと判定
 
 export interface CapturedFrame {
   blob: Blob;
   timestamp: number;
   /** プルーニング時の比較用: ダウンサンプル済みピクセルデータ */
   fingerprint: Uint8Array;
+  /** ブレスコア (Laplacian variance): 大きいほどシャープ */
+  blurScore: number;
 }
 
 /**
@@ -37,6 +40,39 @@ async function blobToFingerprint(blob: Blob): Promise<Uint8Array> {
     gray[i] = Math.round(0.299 * r + 0.587 * g + 0.114 * b);
   }
   return gray;
+}
+
+/**
+ * Laplacian variance でブレスコアを計算する。
+ * 値が大きいほどシャープ（エッジが多い）。
+ * fingerprint (64x64 grayscale) を再利用する。
+ */
+function computeBlurScore(gray: Uint8Array): number {
+  const w = 64;
+  const h = 64;
+  // 3x3 Laplacian カーネル: [0,-1,0,-1,4,-1,0,-1,0]
+  let sum = 0;
+  let sumSq = 0;
+  let count = 0;
+
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      const idx = y * w + x;
+      const lap =
+        4 * gray[idx] -
+        gray[idx - 1] -
+        gray[idx + 1] -
+        gray[idx - w] -
+        gray[idx + w];
+      sum += lap;
+      sumSq += lap * lap;
+      count++;
+    }
+  }
+
+  const mean = sum / count;
+  const variance = sumSq / count - mean * mean;
+  return variance;
 }
 
 /**
@@ -122,16 +158,24 @@ export function createFrameCaptureSession(
 
       if (rawFrames.length === 0) return [];
 
-      // fingerprint 計算
+      // fingerprint + ブレスコア計算
       const frames: CapturedFrame[] = await Promise.all(
-        rawFrames.map(async (f) => ({
-          blob: f.blob,
-          timestamp: f.timestamp,
-          fingerprint: await blobToFingerprint(f.blob),
-        }))
+        rawFrames.map(async (f) => {
+          const fingerprint = await blobToFingerprint(f.blob);
+          const blurScore = computeBlurScore(fingerprint);
+          return {
+            blob: f.blob,
+            timestamp: f.timestamp,
+            fingerprint,
+            blurScore,
+          };
+        })
       );
 
-      // プルーニング: 類似フレームを除去
+      console.log("[frame-capture] ブレスコア分布:",
+        frames.map((f) => Math.round(f.blurScore)).join(", "));
+
+      // プルーニング: ブレ除去 → 類似フレーム除去
       return pruneFrames(frames);
     },
   };
@@ -140,23 +184,33 @@ export function createFrameCaptureSession(
 }
 
 /**
- * 類似フレームを除去し上限 MAX_FRAMES に絞る。
- * 戦略: 先頭から順に保持し、既に保持したフレームと類似していたら除外。
- * MAX_FRAMES を超えたら等間隔サンプリング。
+ * ブレフレーム除去 → 類似フレーム除去 → 上限 MAX_FRAMES に絞る。
  */
 function pruneFrames(frames: CapturedFrame[]): CapturedFrame[] {
   if (frames.length <= 1) return frames;
 
+  // 0. ブレフレーム除去
+  const sharp = frames.filter((f) => f.blurScore >= BLUR_THRESHOLD);
+  console.log("[frame-capture] ブレ除去: %d → %d 枚 (閾値=%d)",
+    frames.length, sharp.length, BLUR_THRESHOLD);
+
+  // ブレ除去で全滅した場合はスコア上位を残す
+  const source = sharp.length > 0
+    ? sharp
+    : [...frames].sort((a, b) => b.blurScore - a.blurScore).slice(0, MAX_FRAMES);
+
   // 1. 類似フレーム除去
-  const kept: CapturedFrame[] = [frames[0]];
-  for (let i = 1; i < frames.length; i++) {
+  const kept: CapturedFrame[] = [source[0]];
+  for (let i = 1; i < source.length; i++) {
     const isTooSimilar = kept.some(
-      (k) => similarity(k.fingerprint, frames[i].fingerprint) > SIMILARITY_THRESHOLD
+      (k) => similarity(k.fingerprint, source[i].fingerprint) > SIMILARITY_THRESHOLD
     );
     if (!isTooSimilar) {
-      kept.push(frames[i]);
+      kept.push(source[i]);
     }
   }
+
+  console.log("[frame-capture] 類似除去: %d → %d 枚", source.length, kept.length);
 
   // 2. MAX_FRAMES 以下に制限（等間隔サンプリング）
   if (kept.length <= MAX_FRAMES) return kept;

@@ -8,7 +8,7 @@ from PIL import Image
 
 from eden import config
 from eden.clients import get_bedrock_embed_client
-from eden.image_util import jpeg_bytes
+from eden.image_util import jpeg_bytes, normalize_lighting
 
 
 def embed_image(
@@ -19,6 +19,8 @@ def embed_image(
     dim: int | None = None,
 ) -> np.ndarray:
     """画像を埋め込みベクトルに変換する。
+
+    光の正規化 (CLAHE) を適用してから埋め込みを行う。
 
     Args:
         img: 入力画像 (RGB)
@@ -32,6 +34,9 @@ def embed_image(
     client = client or get_bedrock_embed_client()
     model_id = model_id or config.EMBED_MODEL_ID
     dim = dim or config.EMBED_DIM
+
+    # 光の正規化 (照明条件の差を軽減)
+    img = normalize_lighting(img)
 
     b64 = base64.b64encode(jpeg_bytes(img)).decode()
     resp = client.invoke_model(

@@ -200,6 +200,16 @@ export class ApiStack extends Construct {
       code: lambda.Code.fromAsset(path.join(functionsDir, "add_info")),
     } as lambda.FunctionProps);
 
+    // ─── 運用ツール: リセット Lambda ──────────────────────────────
+    const resetDataFn = new lambda.Function(this, "ResetDataFn", {
+      ...commonLambdaProps,
+      handler: "handler.handler",
+      code: lambda.Code.fromAsset(path.join(functionsDir, "reset_data")),
+      timeout: cdk.Duration.minutes(5),
+      memorySize: 512,
+      description: "運用ツール: S3 Vectors + DynamoDB を空にする",
+    } as lambda.FunctionProps);
+
     // ─── SQS Trigger ──────────────────────────────────────────────
     registerWorkerFn.addEventSource(
       new lambdaEventSources.SqsEventSource(registerQueue, {
@@ -211,9 +221,11 @@ export class ApiStack extends Construct {
     // DynamoDB
     objectsTable.grantReadWriteData(registerWorkerFn);
     objectsTable.grantReadWriteData(addInfoFn);
+    objectsTable.grantReadWriteData(resetDataFn);
     objectsTable.grantReadData(searchFn);
     jobsTable.grantReadWriteData(registerFn);
     jobsTable.grantReadWriteData(registerWorkerFn);
+    jobsTable.grantReadWriteData(resetDataFn);
     jobsTable.grantReadData(jobStatusFn);
 
     // S3
@@ -257,6 +269,7 @@ export class ApiStack extends Construct {
     });
     registerWorkerFn.addToRolePolicy(s3VectorsPolicy);
     searchFn.addToRolePolicy(s3VectorsPolicy);
+    resetDataFn.addToRolePolicy(s3VectorsPolicy);
 
     // ─── API Gateway ──────────────────────────────────────────────
     const api = new apigateway.RestApi(this, "EdenApi", {
