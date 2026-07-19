@@ -2,6 +2,7 @@
 
 import { useState, useCallback } from "react";
 import { SearchResultItem, addObjectInfo } from "../lib/api";
+import { BBOX_BORDER_WIDTH } from "../lib/ui-config";
 
 interface SearchResultProps {
   imageUrl: string;
@@ -11,9 +12,9 @@ interface SearchResultProps {
 }
 
 const VERDICT_BORDER: Record<string, string> = {
-  green: "border-green-500 shadow-[0_0_6px_rgba(34,197,94,0.5)]",
-  yellow: "border-yellow-500 shadow-[0_0_6px_rgba(234,179,8,0.5)]",
-  red: "border-red-500 shadow-[0_0_6px_rgba(239,68,68,0.5)]",
+  green: "border-solid border-green-500 shadow-[0_0_6px_rgba(34,197,94,0.5)]",
+  yellow: "border-solid border-yellow-500 shadow-[0_0_6px_rgba(234,179,8,0.5)]",
+  red: "border-solid border-red-500 shadow-[0_0_6px_rgba(239,68,68,0.5)]",
 };
 
 export default function SearchResult({
@@ -38,11 +39,12 @@ export default function SearchResult({
             top: `${(y1 / 1000) * 100}%`,
             width: `${((x2 - x1) / 1000) * 100}%`,
             height: `${((y2 - y1) / 1000) * 100}%`,
+            borderWidth: `${BBOX_BORDER_WIDTH}px`,
           };
           return (
             <button
               key={idx}
-              className={`absolute border-[2.5px] rounded bg-transparent p-0 cursor-pointer active:bg-white/10 ${VERDICT_BORDER[item.verdict]}`}
+              className={`absolute rounded bg-transparent p-0 cursor-pointer active:bg-white/10 ${VERDICT_BORDER[item.verdict]}`}
               style={style}
               onClick={() => setSelectedIdx(idx)}
               aria-label={`検出物体 ${idx + 1}: ${verdictLabel(item.verdict)}`}
