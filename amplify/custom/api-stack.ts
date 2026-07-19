@@ -1,0 +1,300 @@
+import { execSync } from "child_process";
+import * as path from "path";
+import { fileURLToPath } from "url";
+import { Construct } from "constructs";
+import * as cdk from "aws-cdk-lib";
+import * as lambda from "aws-cdk-lib/aws-lambda";
+import * as apigateway from "aws-cdk-lib/aws-apigateway";
+import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
+import * as s3 from "aws-cdk-lib/aws-s3";
+import * as sqs from "aws-cdk-lib/aws-sqs";
+import * as iam from "aws-cdk-lib/aws-iam";
+import * as cognito from "aws-cdk-lib/aws-cognito";
+import * as lambdaEventSources from "aws-cdk-lib/aws-lambda-event-sources";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+export interface ApiStackProps {
+  userPool: cognito.IUserPool;
+  userPoolClient: cognito.IUserPoolClient;
+}
+
+export class ApiStack extends Construct {
+  public readonly apiEndpoint: string;
+
+  constructor(scope: Construct, id: string, props: ApiStackProps) {
+    super(scope, id);
+
+    // ─── DynamoDB ─────────────────────────────────────────────────
+    const objectsTable = new dynamodb.Table(this, "ObjectsTable", {
+      partitionKey: { name: "object_id", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    const jobsTable = new dynamodb.Table(this, "JobsTable", {
+      partitionKey: { name: "job_id", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    // ─── S3 (画像バケット) ────────────────────────────────────────
+    const imageBucket = new s3.Bucket(this, "ImageBucket", {
+      cors: [
+        {
+          allowedMethods: [s3.HttpMethods.PUT, s3.HttpMethods.GET],
+          allowedOrigins: ["*"],
+          allowedHeaders: ["*"],
+        },
+      ],
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      autoDeleteObjects: true,
+    });
+
+    // ─── SQS (登録ジョブキュー) ───────────────────────────────────
+    const registerQueue = new sqs.Queue(this, "RegisterQueue", {
+      visibilityTimeout: cdk.Duration.minutes(15),
+      retentionPeriod: cdk.Duration.days(3),
+    });
+
+    // ─── Lambda Layer (eden パッケージ) ───────────────────────────
+    const edenLayer = new lambda.LayerVersion(this, "EdenLayer", {
+      code: lambda.Code.fromAsset(path.join(__dirname, "../../eden"), {
+        bundling: {
+          image: lambda.Runtime.PYTHON_3_12.bundlingImage,
+          local: {
+            tryBundle(outputDir: string): boolean {
+              try {
+                const edenDir = path.join(__dirname, "../../eden");
+                execSync(
+                  [
+                    "pip3 install",
+                    "--platform manylinux2014_x86_64",
+                    "--implementation cp",
+                    "--python-version 3.12",
+                    "--only-binary=:all:",
+                    "-r requirements.txt",
+                    `-t ${outputDir}/python`,
+                  ].join(" "),
+                  { cwd: edenDir, stdio: "inherit" }
+                );
+                execSync(`cp -r ${edenDir} ${outputDir}/python/eden`);
+                // requirements.txt と __pycache__ を除外
+                execSync(`rm -f ${outputDir}/python/eden/requirements.txt`);
+                execSync(`rm -rf ${outputDir}/python/eden/__pycache__`);
+                return true;
+              } catch {
+                return false;
+              }
+            },
+          },
+          command: [
+            "bash",
+            "-c",
+            "pip install -r requirements.txt -t /asset-output/python && " +
+              "cp -r . /asset-output/python/eden && " +
+              "rm -f /asset-output/python/eden/requirements.txt && " +
+              "rm -rf /asset-output/python/eden/__pycache__",
+          ],
+        },
+      }),
+      compatibleRuntimes: [lambda.Runtime.PYTHON_3_12],
+      description: "eden common module layer",
+    });
+
+    // ─── Lambda 共通設定 ──────────────────────────────────────────
+    const commonLambdaProps: Partial<lambda.FunctionProps> = {
+      runtime: lambda.Runtime.PYTHON_3_12,
+      layers: [edenLayer],
+      timeout: cdk.Duration.seconds(29),
+      memorySize: 512,
+      environment: {
+        OBJECTS_TABLE: objectsTable.tableName,
+        JOBS_TABLE: jobsTable.tableName,
+        IMAGE_BUCKET: imageBucket.bucketName,
+        REGISTER_QUEUE_URL: registerQueue.queueUrl,
+      },
+    };
+
+    const functionsDir = path.join(__dirname, "../functions");
+
+    // ─── Lambda Functions ─────────────────────────────────────────
+    const uploadUrlFn = new lambda.Function(this, "UploadUrlFn", {
+      ...commonLambdaProps,
+      handler: "handler.handler",
+      code: lambda.Code.fromAsset(path.join(functionsDir, "upload_url")),
+    } as lambda.FunctionProps);
+
+    const bboxCandidatesFn = new lambda.Function(this, "BboxCandidatesFn", {
+      ...commonLambdaProps,
+      handler: "handler.handler",
+      code: lambda.Code.fromAsset(path.join(functionsDir, "bbox_candidates")),
+      timeout: cdk.Duration.seconds(29),
+      memorySize: 1024,
+    } as lambda.FunctionProps);
+
+    const registerFn = new lambda.Function(this, "RegisterFn", {
+      ...commonLambdaProps,
+      handler: "handler.handler",
+      code: lambda.Code.fromAsset(path.join(functionsDir, "register")),
+    } as lambda.FunctionProps);
+
+    const registerWorkerFn = new lambda.Function(this, "RegisterWorkerFn", {
+      ...commonLambdaProps,
+      handler: "handler.handler",
+      code: lambda.Code.fromAsset(path.join(functionsDir, "register_worker")),
+      timeout: cdk.Duration.minutes(15),
+      memorySize: 1024,
+    } as lambda.FunctionProps);
+
+    const jobStatusFn = new lambda.Function(this, "JobStatusFn", {
+      ...commonLambdaProps,
+      handler: "handler.handler",
+      code: lambda.Code.fromAsset(path.join(functionsDir, "job_status")),
+    } as lambda.FunctionProps);
+
+    const searchFn = new lambda.Function(this, "SearchFn", {
+      ...commonLambdaProps,
+      handler: "handler.handler",
+      code: lambda.Code.fromAsset(path.join(functionsDir, "search")),
+      timeout: cdk.Duration.seconds(29),
+      memorySize: 1024,
+    } as lambda.FunctionProps);
+
+    const addInfoFn = new lambda.Function(this, "AddInfoFn", {
+      ...commonLambdaProps,
+      handler: "handler.handler",
+      code: lambda.Code.fromAsset(path.join(functionsDir, "add_info")),
+    } as lambda.FunctionProps);
+
+    // ─── SQS Trigger ──────────────────────────────────────────────
+    registerWorkerFn.addEventSource(
+      new lambdaEventSources.SqsEventSource(registerQueue, {
+        batchSize: 1,
+      })
+    );
+
+    // ─── IAM Permissions ──────────────────────────────────────────
+    // DynamoDB
+    objectsTable.grantReadWriteData(registerWorkerFn);
+    objectsTable.grantReadWriteData(addInfoFn);
+    objectsTable.grantReadData(searchFn);
+    jobsTable.grantReadWriteData(registerFn);
+    jobsTable.grantReadWriteData(registerWorkerFn);
+    jobsTable.grantReadData(jobStatusFn);
+
+    // S3
+    imageBucket.grantPut(uploadUrlFn);
+    imageBucket.grantReadWrite(registerWorkerFn);
+    imageBucket.grantRead(bboxCandidatesFn);
+    imageBucket.grantRead(searchFn);
+
+    // SQS
+    registerQueue.grantSendMessages(registerFn);
+
+    // Bedrock (BBox検出, 文字抽出, 埋め込み)
+    const bedrockPolicy = new iam.PolicyStatement({
+      actions: ["bedrock:InvokeModel"],
+      resources: ["*"],
+    });
+    bboxCandidatesFn.addToRolePolicy(bedrockPolicy);
+    registerWorkerFn.addToRolePolicy(bedrockPolicy);
+    searchFn.addToRolePolicy(bedrockPolicy);
+
+    // Rekognition (ガードレール)
+    const rekognitionPolicy = new iam.PolicyStatement({
+      actions: [
+        "rekognition:DetectFaces",
+        "rekognition:DetectLabels",
+        "rekognition:DetectModerationLabels",
+      ],
+      resources: ["*"],
+    });
+    registerWorkerFn.addToRolePolicy(rekognitionPolicy);
+
+    // S3 Vectors
+    const s3VectorsPolicy = new iam.PolicyStatement({
+      actions: [
+        "s3vectors:PutVectors",
+        "s3vectors:QueryVectors",
+        "s3vectors:GetVectors",
+      ],
+      resources: ["*"],
+    });
+    registerWorkerFn.addToRolePolicy(s3VectorsPolicy);
+    searchFn.addToRolePolicy(s3VectorsPolicy);
+
+    // ─── API Gateway ──────────────────────────────────────────────
+    const api = new apigateway.RestApi(this, "EdenApi", {
+      restApiName: "Eden API",
+      defaultCorsPreflightOptions: {
+        allowOrigins: apigateway.Cors.ALL_ORIGINS,
+        allowMethods: apigateway.Cors.ALL_METHODS,
+        allowHeaders: ["Content-Type", "Authorization"],
+      },
+    });
+
+    // Cognito Authorizer
+    const authorizer = new apigateway.CognitoUserPoolsAuthorizer(
+      this,
+      "CognitoAuthorizer",
+      {
+        cognitoUserPools: [props.userPool as cognito.UserPool],
+      }
+    );
+
+    const authMethodOptions: apigateway.MethodOptions = {
+      authorizer,
+      authorizationType: apigateway.AuthorizationType.COGNITO,
+    };
+
+    // Routes
+    const uploadUrl = api.root.addResource("upload-url");
+    uploadUrl.addMethod(
+      "POST",
+      new apigateway.LambdaIntegration(uploadUrlFn),
+      authMethodOptions
+    );
+
+    const bboxCandidates = api.root.addResource("bbox-candidates");
+    bboxCandidates.addMethod(
+      "POST",
+      new apigateway.LambdaIntegration(bboxCandidatesFn),
+      authMethodOptions
+    );
+
+    const register = api.root.addResource("register");
+    register.addMethod(
+      "POST",
+      new apigateway.LambdaIntegration(registerFn),
+      authMethodOptions
+    );
+
+    const jobs = api.root.addResource("jobs");
+    const jobId = jobs.addResource("{id}");
+    jobId.addMethod(
+      "GET",
+      new apigateway.LambdaIntegration(jobStatusFn),
+      authMethodOptions
+    );
+
+    const search = api.root.addResource("search");
+    search.addMethod(
+      "POST",
+      new apigateway.LambdaIntegration(searchFn),
+      authMethodOptions
+    );
+
+    const objects = api.root.addResource("objects");
+    const objectId = objects.addResource("{id}");
+    const info = objectId.addResource("info");
+    info.addMethod(
+      "POST",
+      new apigateway.LambdaIntegration(addInfoFn),
+      authMethodOptions
+    );
+
+    this.apiEndpoint = api.url;
+  }
+}
