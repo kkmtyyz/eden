@@ -2,6 +2,7 @@
 
 import { useRef, useState, useCallback } from "react";
 import Camera, { CameraHandle } from "./camera";
+import FrameSelector from "./frame-selector";
 import BboxSelector from "./bbox-selector";
 import JobProgress from "./job-progress";
 import {
@@ -20,15 +21,16 @@ import {
  * 登録フローの状態
  */
 type FlowState =
-  | "camera"       // カメラプレビュー（キャプチャ待機）
-  | "capturing"    // マルチフレームキャプチャ中
-  | "pruning"      // プルーニング中
-  | "uploading"    // S3 アップロード中
-  | "bbox"         // BBox 候補選択
-  | "registering"  // 登録リクエスト中
-  | "polling"      // ジョブ進捗ポーリング
-  | "done"         // 完了
-  | "error";       // エラー
+  | "camera"        // カメラプレビュー（キャプチャ待機）
+  | "capturing"     // マルチフレームキャプチャ中
+  | "pruning"       // プルーニング中
+  | "frame-select"  // サムネ用代表画像選択
+  | "uploading"     // S3 アップロード中
+  | "bbox"          // BBox 候補選択
+  | "registering"   // 登録リクエスト中
+  | "polling"       // ジョブ進捗ポーリング
+  | "done"          // 完了
+  | "error";        // エラー
 
 export default function RegisterFlow() {
   const cameraRef = useRef<CameraHandle>(null);
@@ -37,11 +39,11 @@ export default function RegisterFlow() {
   const [state, setState] = useState<FlowState>("camera");
   const [frameCount, setFrameCount] = useState(0);
   const [prunedFrames, setPrunedFrames] = useState<CapturedFrame[]>([]);
+  const [representativeIdx, setRepresentativeIdx] = useState(0);
   const [uploadedKeys, setUploadedKeys] = useState<string[]>([]);
   const [uploadProgress, setUploadProgress] = useState({ done: 0, total: 0 });
   const [bboxData, setBboxData] = useState<BboxCandidatesResponse | null>(null);
   const [representativeUrl, setRepresentativeUrl] = useState<string | null>(null);
-  const [selectedBox, setSelectedBox] = useState<number[] | null>(null);
   const [jobId, setJobId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -64,16 +66,14 @@ export default function RegisterFlow() {
       }
     }, 200);
 
-    // sessionRef に interval を紐づけて停止時にクリア
     (sessionRef.current as unknown as { _countInterval: ReturnType<typeof setInterval> })._countInterval = countInterval;
   }, []);
 
-  // ─── Step 2: キャプチャ停止 → プルーニング → アップロード ───
+  // ─── Step 2: キャプチャ停止 → プルーニング → フレーム選択へ ──
   const handleStopCapture = useCallback(async () => {
     const session = sessionRef.current;
     if (!session) return;
 
-    // interval クリア
     const interval = (session as unknown as { _countInterval: ReturnType<typeof setInterval> })._countInterval;
     if (interval) clearInterval(interval);
 
@@ -89,32 +89,8 @@ export default function RegisterFlow() {
         throw new Error("有効なフレームがありません。もう一度撮影してください。");
       }
 
-      // アップロード
-      console.log("[register-flow] S3 アップロード開始:", { count: frames.length });
-      setState("uploading");
-      setUploadProgress({ done: 0, total: frames.length });
-
-      const blobs = frames.map((f) => f.blob);
-      const results = await uploadImages(blobs, (done, total) => {
-        setUploadProgress({ done, total });
-      });
-
-      const keys = results.map((r) => r.key);
-      setUploadedKeys(keys);
-      console.log("[register-flow] アップロード完了:", { keys });
-
-      // 代表フレーム (最初の1枚) で BBox 候補取得
-      const representativeKey = keys[0];
-      console.log("[register-flow] BBox 候補取得中:", { representativeKey });
-      const bboxRes = await getBboxCandidates(representativeKey);
-      console.log("[register-flow] BBox 候補:", bboxRes);
-      setBboxData(bboxRes);
-
-      // 代表フレームのプレビュー用 URL
-      const previewUrl = URL.createObjectURL(frames[0].blob);
-      setRepresentativeUrl(previewUrl);
-
-      setState("bbox");
+      // フレーム選択ステップへ
+      setState("frame-select");
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error("[register-flow] エラー:", msg);
@@ -123,18 +99,59 @@ export default function RegisterFlow() {
     }
   }, [frameCount]);
 
-  // ─── Step 3: BBox 選択確定 → 登録 ──────────────────────────
+  // ─── Step 3: 代表フレーム選択確定 → アップロード → BBox ────
+  const handleFrameSelect = useCallback(
+    async (selectedIdx: number) => {
+      setRepresentativeIdx(selectedIdx);
+      console.log("[register-flow] 代表画像選択:", { selectedIdx, totalFrames: prunedFrames.length });
+
+      try {
+        // アップロード
+        console.log("[register-flow] S3 アップロード開始:", { count: prunedFrames.length });
+        setState("uploading");
+        setUploadProgress({ done: 0, total: prunedFrames.length });
+
+        const blobs = prunedFrames.map((f) => f.blob);
+        const results = await uploadImages(blobs, (done, total) => {
+          setUploadProgress({ done, total });
+        });
+
+        const keys = results.map((r) => r.key);
+        setUploadedKeys(keys);
+        console.log("[register-flow] アップロード完了:", { keys, representativeKey: keys[selectedIdx] });
+
+        // 代表フレームで BBox 候補取得
+        const representativeKey = keys[selectedIdx];
+        console.log("[register-flow] BBox 候補取得中:", { representativeKey });
+        const bboxRes = await getBboxCandidates(representativeKey);
+        console.log("[register-flow] BBox 候補:", bboxRes);
+        setBboxData(bboxRes);
+
+        // 代表フレームのプレビュー用 URL
+        const previewUrl = URL.createObjectURL(prunedFrames[selectedIdx].blob);
+        setRepresentativeUrl(previewUrl);
+
+        setState("bbox");
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error("[register-flow] エラー:", msg);
+        setError(msg);
+        setState("error");
+      }
+    },
+    [prunedFrames]
+  );
+
+  // ─── Step 4: BBox 選択確定 → 登録 ──────────────────────────
   const handleBboxConfirm = useCallback(
     async (box: number[]) => {
-      setSelectedBox(box);
       console.log("[register-flow] BBox 選択確定:", box);
-      console.log("[register-flow] 登録リクエスト送信中...");
+      console.log("[register-flow] 登録リクエスト送信中... (全 %d 枚)", uploadedKeys.length);
       setState("registering");
 
       try {
-        // 代表フレームの key + 選択した BBox で登録
-        const representativeKey = uploadedKeys[0];
-        const res = await registerObject(representativeKey, box);
+        const representativeKey = uploadedKeys[representativeIdx];
+        const res = await registerObject(uploadedKeys, representativeKey, box);
         console.log("[register-flow] 登録ジョブ投入成功:", res);
         setJobId(res.job_id);
         setState("polling");
@@ -145,10 +162,10 @@ export default function RegisterFlow() {
         setState("error");
       }
     },
-    [uploadedKeys]
+    [uploadedKeys, representativeIdx]
   );
 
-  // ─── Step 4: ジョブ完了 ─────────────────────────────────────
+  // ─── Step 5: ジョブ完了 ─────────────────────────────────────
   const handleJobComplete = useCallback(() => {
     console.log("[register-flow] 登録完了!");
     setState("done");
@@ -167,11 +184,11 @@ export default function RegisterFlow() {
     setState("camera");
     setFrameCount(0);
     setPrunedFrames([]);
+    setRepresentativeIdx(0);
     setUploadedKeys([]);
     setUploadProgress({ done: 0, total: 0 });
     setBboxData(null);
     setRepresentativeUrl(null);
-    setSelectedBox(null);
     setJobId(null);
     setError(null);
   }, [representativeUrl]);
@@ -232,6 +249,11 @@ export default function RegisterFlow() {
         </div>
       )}
 
+      {/* ─── フレーム選択 (サムネ用代表画像) ─── */}
+      {state === "frame-select" && prunedFrames.length > 0 && (
+        <FrameSelector frames={prunedFrames} onConfirm={handleFrameSelect} />
+      )}
+
       {/* ─── アップロード中 ─── */}
       {state === "uploading" && (
         <div className="flex-1 flex flex-col items-center justify-center p-8 mt-12">
@@ -239,7 +261,6 @@ export default function RegisterFlow() {
           <p className="mt-4 text-sm text-white/70">
             アップロード中... ({uploadProgress.done}/{uploadProgress.total})
           </p>
-          {/* プログレスバー */}
           <div className="w-3/4 max-w-xs h-2 bg-white/10 rounded-full mt-3 overflow-hidden">
             <div
               className="h-full bg-blue-500 rounded-full transition-all duration-300"

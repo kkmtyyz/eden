@@ -21,15 +21,29 @@ sqs_client = boto3.client("sqs")
 
 def handler(event, context):
     body = json.loads(event.get("body") or "{}")
-    key = body.get("key")
-    box = body.get("box")  # [x1, y1, x2, y2] (0-1000スケール)
-    object_id = body.get("object_id")  # 新規登録時はNone、追加登録時は既存ID
 
-    logger.info("[register] リクエスト受信: key=%s, box=%s, object_id=%s", key, box, object_id)
+    # マルチフレーム対応: keys[] + representative_key
+    keys = body.get("keys")              # 全フレームの S3 キー配列
+    representative_key = body.get("representative_key")  # サムネ用代表画像
+    box = body.get("box")                # [x1, y1, x2, y2] (0-1000スケール)
+    object_id = body.get("object_id")    # 新規登録時はNone、追加登録時は既存ID
 
-    if not key:
-        logger.warning("[register] key が未指定")
-        return _error(400, "key is required")
+    # 後方互換: 旧 API (key 単体) もサポート
+    if not keys:
+        single_key = body.get("key")
+        if single_key:
+            keys = [single_key]
+            representative_key = representative_key or single_key
+
+    logger.info("[register] リクエスト受信: keys=%d枚, representative_key=%s, box=%s, object_id=%s",
+                len(keys) if keys else 0, representative_key, box, object_id)
+
+    if not keys or len(keys) == 0:
+        logger.warning("[register] keys が未指定")
+        return _error(400, "keys is required")
+    if not representative_key:
+        logger.warning("[register] representative_key が未指定")
+        return _error(400, "representative_key is required")
     if not box:
         logger.warning("[register] box が未指定")
         return _error(400, "box is required")
@@ -37,7 +51,7 @@ def handler(event, context):
     # ジョブID生成
     job_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
-    logger.info("[register] ジョブ作成: job_id=%s", job_id)
+    logger.info("[register] ジョブ作成: job_id=%s, frame_count=%d", job_id, len(keys))
 
     # DynamoDB にジョブレコード作成
     jobs_table.put_item(
@@ -55,12 +69,13 @@ def handler(event, context):
         QueueUrl=REGISTER_QUEUE_URL,
         MessageBody=json.dumps({
             "job_id": job_id,
-            "key": key,
+            "keys": keys,
+            "representative_key": representative_key,
             "box": box,
             "object_id": object_id,
         }),
     )
-    logger.info("[register] SQS メッセージ送信完了: queue=%s", REGISTER_QUEUE_URL)
+    logger.info("[register] SQS メッセージ送信完了: queue=%s, keys=%d枚", REGISTER_QUEUE_URL, len(keys))
 
     return {
         "statusCode": 202,

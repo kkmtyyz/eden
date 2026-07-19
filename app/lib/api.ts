@@ -90,14 +90,15 @@ export interface RegisterResponse {
 }
 
 export function registerObject(
-  key: string,
+  keys: string[],
+  representativeKey: string,
   box: number[],
   objectId?: string
 ): Promise<RegisterResponse> {
-  console.log("[api] registerObject 呼び出し:", { key, box, objectId });
+  console.log("[api] registerObject 呼び出し:", { keys, representativeKey, box, objectId });
   return apiRequest("/register", {
     method: "POST",
-    body: JSON.stringify({ key, box, object_id: objectId }),
+    body: JSON.stringify({ keys, representative_key: representativeKey, box, object_id: objectId }),
   });
 }
 
