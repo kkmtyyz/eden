@@ -31,11 +31,9 @@ export default function SearchFlow() {
       return;
     }
 
-    // キャプチャした画像をプレビュー用に保持
     const objectUrl = URL.createObjectURL(blob);
     setCapturedImageUrl(objectUrl);
 
-    // 画像サイズ取得
     const img = new Image();
     img.src = objectUrl;
     await new Promise((resolve) => {
@@ -44,15 +42,12 @@ export default function SearchFlow() {
     setImageSize({ w: img.naturalWidth, h: img.naturalHeight });
 
     try {
-      // 1. アップロード
       setState("uploading");
       const { key } = await uploadImage(blob, `search_${Date.now()}.jpg`);
 
-      // 2. 検索リクエスト
       setState("searching");
       const response = await searchImage(key);
 
-      // 3. 結果表示
       setResults(response.results);
       setState("results");
     } catch (err) {
@@ -74,8 +69,8 @@ export default function SearchFlow() {
   }, [capturedImageUrl]);
 
   return (
-    <div className="search-flow">
-      {/* カメラ表示 (camera/uploading/searching 時) */}
+    <div className="flex-1 flex flex-col">
+      {/* カメラ表示 */}
       {state === "camera" && (
         <>
           <Camera
@@ -83,13 +78,13 @@ export default function SearchFlow() {
             showGuide={true}
             guideText="物体を映してシャッターを押してください"
           />
-          <div className="search-flow-actions">
+          <div className="fixed bottom-[4.5rem] left-0 right-0 flex justify-center p-4 z-50">
             <button
-              className="shutter-btn"
+              className="w-[72px] h-[72px] rounded-full border-4 border-white bg-transparent flex items-center justify-center active:scale-90 transition-transform"
               onClick={handleCapture}
               aria-label="撮影して検索"
             >
-              <span className="shutter-btn-inner" />
+              <span className="w-[58px] h-[58px] rounded-full bg-white" />
             </button>
           </div>
         </>
@@ -97,16 +92,16 @@ export default function SearchFlow() {
 
       {/* ローディング */}
       {(state === "uploading" || state === "searching") && (
-        <div className="search-flow-loading">
+        <div className="flex-1 flex flex-col items-center justify-center p-8 mt-12">
           {capturedImageUrl && (
             <img
               src={capturedImageUrl}
               alt="撮影画像"
-              className="search-flow-preview"
+              className="w-4/5 max-w-xs rounded-lg opacity-70"
             />
           )}
-          <div className="search-flow-spinner" />
-          <p className="search-flow-status">
+          <div className="w-8 h-8 border-[3px] border-white/20 border-t-white rounded-full animate-spin mt-6" />
+          <p className="mt-3 text-sm text-white/70">
             {state === "uploading" ? "アップロード中..." : "検索中..."}
           </p>
         </div>
@@ -114,14 +109,17 @@ export default function SearchFlow() {
 
       {/* 結果表示 */}
       {state === "results" && capturedImageUrl && imageSize && (
-        <div className="search-flow-results">
+        <div className="flex-1 flex flex-col mt-12 mb-16 overflow-y-auto">
           <SearchResult
             imageUrl={capturedImageUrl}
             imageWidth={imageSize.w}
             imageHeight={imageSize.h}
             results={results}
           />
-          <button className="search-flow-back-btn" onClick={handleRetry}>
+          <button
+            className="mx-auto my-4 px-6 py-2 bg-white/15 text-white border border-white/30 rounded-lg text-sm"
+            onClick={handleRetry}
+          >
             戻って撮り直す
           </button>
         </div>
@@ -129,10 +127,15 @@ export default function SearchFlow() {
 
       {/* エラー */}
       {state === "error" && (
-        <div className="search-flow-error">
-          <p className="error-icon">!</p>
-          <p className="error-message">{error}</p>
-          <button className="search-flow-back-btn" onClick={handleRetry}>
+        <div className="flex-1 flex flex-col items-center justify-center p-8 mt-12">
+          <div className="w-12 h-12 rounded-full bg-red-500 text-white flex items-center justify-center text-2xl font-bold">
+            !
+          </div>
+          <p className="mt-4 text-sm text-white/70 text-center">{error}</p>
+          <button
+            className="mt-4 px-6 py-2 bg-white/15 text-white border border-white/30 rounded-lg text-sm"
+            onClick={handleRetry}
+          >
             やり直す
           </button>
         </div>

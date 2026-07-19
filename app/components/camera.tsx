@@ -94,7 +94,6 @@ const Camera = forwardRef<CameraHandle, CameraProps>(function Camera(
 
     ctx.drawImage(video, 0, 0);
 
-    // toBlob は非同期だが、toDataURL → Blob 変換で同期的に返す
     const dataUrl = canvas.toDataURL("image/jpeg", 0.85);
     const binary = atob(dataUrl.split(",")[1]);
     const arr = new Uint8Array(binary.length);
@@ -119,10 +118,13 @@ const Camera = forwardRef<CameraHandle, CameraProps>(function Camera(
 
   if (error) {
     return (
-      <div className="camera-error">
-        <p>カメラを起動できません</p>
-        <p className="camera-error-detail">{error}</p>
-        <button onClick={startCamera} className="camera-retry-btn">
+      <div className="flex flex-col items-center justify-center p-8 text-center min-h-[60dvh]">
+        <p className="text-white text-base">カメラを起動できません</p>
+        <p className="text-xs text-white/50 mt-2">{error}</p>
+        <button
+          onClick={startCamera}
+          className="mt-4 px-6 py-2 bg-blue-600 text-white rounded-lg text-sm"
+        >
           再試行
         </button>
       </div>
@@ -130,22 +132,24 @@ const Camera = forwardRef<CameraHandle, CameraProps>(function Camera(
   }
 
   return (
-    <div className="camera-container">
+    <div className="relative w-full flex-1 flex items-center justify-center bg-black mt-12 mb-16 overflow-hidden">
       <video
         ref={videoRef}
         autoPlay
         playsInline
         muted
-        className="camera-video"
+        className="w-full h-full object-cover"
       />
       {/* オフスクリーン canvas (キャプチャ用) */}
-      <canvas ref={canvasRef} style={{ display: "none" }} />
+      <canvas ref={canvasRef} className="hidden" />
 
       {/* ガイド枠オーバーレイ */}
       {showGuide && isActive && (
-        <div className="camera-guide-overlay">
-          <div className="camera-guide-frame" />
-          <p className="camera-guide-text">{guideText}</p>
+        <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+          <div className="w-[70%] max-w-[280px] aspect-square border-2 border-white/60 rounded-xl" />
+          <p className="mt-4 text-xs text-white/80 drop-shadow-md">
+            {guideText}
+          </p>
         </div>
       )}
     </div>
