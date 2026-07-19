@@ -1,6 +1,9 @@
 """物体登録スクリプト。eden パッケージを利用。"""
 
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import boto3
 

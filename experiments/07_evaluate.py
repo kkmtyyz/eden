@@ -4,8 +4,12 @@
 フォルダ名が unknown_ 始まり → 正解=未登録(他人ペア)
 """
 
-import csv
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import csv
 
 import boto3
 import numpy as np
