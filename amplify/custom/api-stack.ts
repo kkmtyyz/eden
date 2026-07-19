@@ -264,6 +264,7 @@ export class ApiStack extends Construct {
         "s3vectors:QueryVectors",
         "s3vectors:GetVectors",
         "s3vectors:DeleteVectors",
+        "s3vectors:ListVectors",
       ],
       resources: ["*"],
     });
