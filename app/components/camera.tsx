@@ -44,6 +44,7 @@ const Camera = forwardRef<CameraHandle, CameraProps>(function Camera(
   const [error, setError] = useState<string | null>(null);
 
   const startCamera = useCallback(async () => {
+    console.log("[camera] カメラ起動開始...");
     try {
       const constraints: MediaStreamConstraints = {
         video: {
@@ -54,24 +55,37 @@ const Camera = forwardRef<CameraHandle, CameraProps>(function Camera(
         audio: false,
       };
 
+      console.log("[camera] getUserMedia 呼び出し:", constraints.video);
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
       streamRef.current = stream;
+
+      const track = stream.getVideoTracks()[0];
+      const settings = track.getSettings();
+      console.log("[camera] カメラ取得成功:", {
+        label: track.label,
+        width: settings.width,
+        height: settings.height,
+        facingMode: settings.facingMode,
+      });
 
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
         setIsActive(true);
         setError(null);
+        console.log("[camera] 映像再生開始");
         onReady?.();
       }
     } catch (err) {
       const e = err instanceof Error ? err : new Error(String(err));
+      console.error("[camera] カメラ起動失敗:", e.message);
       setError(e.message);
       onError?.(e);
     }
   }, [onReady, onError]);
 
   const stopCamera = useCallback(() => {
+    console.log("[camera] カメラ停止");
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((track) => track.stop());
       streamRef.current = null;
@@ -85,7 +99,10 @@ const Camera = forwardRef<CameraHandle, CameraProps>(function Camera(
   const captureFrame = useCallback((): Blob | null => {
     const video = videoRef.current;
     const canvas = canvasRef.current;
-    if (!video || !canvas || !isActive) return null;
+    if (!video || !canvas || !isActive) {
+      console.warn("[camera] captureFrame: カメラ未準備", { video: !!video, canvas: !!canvas, isActive });
+      return null;
+    }
 
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
@@ -100,7 +117,13 @@ const Camera = forwardRef<CameraHandle, CameraProps>(function Camera(
     for (let i = 0; i < binary.length; i++) {
       arr[i] = binary.charCodeAt(i);
     }
-    return new Blob([arr], { type: "image/jpeg" });
+    const blob = new Blob([arr], { type: "image/jpeg" });
+    console.log("[camera] フレームキャプチャ:", {
+      width: canvas.width,
+      height: canvas.height,
+      blobSize: blob.size,
+    });
+    return blob;
   }, [isActive]);
 
   useImperativeHandle(ref, () => ({

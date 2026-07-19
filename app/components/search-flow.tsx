@@ -22,42 +22,71 @@ export default function SearchFlow() {
   const [error, setError] = useState<string | null>(null);
 
   const handleCapture = useCallback(async () => {
-    if (!cameraRef.current) return;
+    console.log("[search-flow] === シャッターボタン押下 ===");
 
+    if (!cameraRef.current) {
+      console.error("[search-flow] cameraRef が null");
+      return;
+    }
+
+    // Step 1: フレームキャプチャ
+    console.log("[search-flow] Step 1: フレームキャプチャ");
     const blob = cameraRef.current.captureFrame();
     if (!blob) {
+      console.error("[search-flow] フレーム取得失敗");
       setError("フレームの取得に失敗しました");
       setState("error");
       return;
     }
+    console.log("[search-flow] フレーム取得成功:", { size: blob.size, type: blob.type });
 
+    // プレビュー用 URL 生成
     const objectUrl = URL.createObjectURL(blob);
     setCapturedImageUrl(objectUrl);
 
+    // 画像サイズ取得
     const img = new Image();
     img.src = objectUrl;
     await new Promise((resolve) => {
       img.onload = resolve;
     });
     setImageSize({ w: img.naturalWidth, h: img.naturalHeight });
+    console.log("[search-flow] 画像サイズ:", { w: img.naturalWidth, h: img.naturalHeight });
 
     try {
+      // Step 2: S3 アップロード
+      console.log("[search-flow] Step 2: S3 アップロード開始");
       setState("uploading");
       const { key } = await uploadImage(blob, `search_${Date.now()}.jpg`);
+      console.log("[search-flow] S3 アップロード完了:", { key });
 
+      // Step 3: 検索 API 呼び出し
+      console.log("[search-flow] Step 3: POST /search 呼び出し");
       setState("searching");
       const response = await searchImage(key);
+      console.log("[search-flow] 検索完了:", {
+        resultCount: response.results.length,
+        results: response.results.map((r) => ({
+          verdict: r.verdict,
+          sim: r.sim,
+          object_id: r.object_id,
+        })),
+      });
 
+      // Step 4: 結果表示
+      console.log("[search-flow] Step 4: 結果表示");
       setResults(response.results);
       setState("results");
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      console.error("[search-flow] エラー発生:", msg, err);
       setError(msg);
       setState("error");
     }
   }, []);
 
   const handleRetry = useCallback(() => {
+    console.log("[search-flow] やり直し (リセット)");
     if (capturedImageUrl) {
       URL.revokeObjectURL(capturedImageUrl);
     }
@@ -67,6 +96,8 @@ export default function SearchFlow() {
     setError(null);
     setState("camera");
   }, [capturedImageUrl]);
+
+  console.log("[search-flow] 現在の状態:", state);
 
   return (
     <div className="flex-1 flex flex-col">
