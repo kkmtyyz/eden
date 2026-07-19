@@ -93,12 +93,19 @@ export function registerObject(
   keys: string[],
   representativeKey: string,
   box: number[],
-  objectId?: string
+  objectId?: string,
+  initialInfo?: string
 ): Promise<RegisterResponse> {
-  console.log("[api] registerObject 呼び出し:", { keys, representativeKey, box, objectId });
+  console.log("[api] registerObject 呼び出し:", { keys, representativeKey, box, objectId, initialInfo });
   return apiRequest("/register", {
     method: "POST",
-    body: JSON.stringify({ keys, representative_key: representativeKey, box, object_id: objectId }),
+    body: JSON.stringify({
+      keys,
+      representative_key: representativeKey,
+      box,
+      object_id: objectId,
+      initial_info: initialInfo,
+    }),
   });
 }
 

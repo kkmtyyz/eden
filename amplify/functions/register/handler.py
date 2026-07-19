@@ -27,6 +27,7 @@ def handler(event, context):
     representative_key = body.get("representative_key")  # サムネ用代表画像
     box = body.get("box")                # [x1, y1, x2, y2] (0-1000スケール)
     object_id = body.get("object_id")    # 新規登録時はNone、追加登録時は既存ID
+    initial_info = body.get("initial_info", "").strip()  # 初期物体情報
 
     # 後方互換: 旧 API (key 単体) もサポート
     if not keys:
@@ -35,8 +36,8 @@ def handler(event, context):
             keys = [single_key]
             representative_key = representative_key or single_key
 
-    logger.info("[register] リクエスト受信: keys=%d枚, representative_key=%s, box=%s, object_id=%s",
-                len(keys) if keys else 0, representative_key, box, object_id)
+    logger.info("[register] リクエスト受信: keys=%d枚, representative_key=%s, box=%s, object_id=%s, initial_info='%s'",
+                len(keys) if keys else 0, representative_key, box, object_id, initial_info[:30] if initial_info else "")
 
     if not keys or len(keys) == 0:
         logger.warning("[register] keys が未指定")
@@ -73,6 +74,7 @@ def handler(event, context):
             "representative_key": representative_key,
             "box": box,
             "object_id": object_id,
+            "initial_info": initial_info,
         }),
     )
     logger.info("[register] SQS メッセージ送信完了: queue=%s, keys=%d枚", REGISTER_QUEUE_URL, len(keys))

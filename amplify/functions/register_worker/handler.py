@@ -78,7 +78,9 @@ def _process(msg: dict):
     representative_key = msg["representative_key"]
     box = msg["box"]
     object_id = msg.get("object_id") or str(uuid.uuid4())
-    logger.info("[register-worker] object_id=%s (新規=%s)", object_id, msg.get("object_id") is None)
+    initial_info = msg.get("initial_info", "").strip()
+    logger.info("[register-worker] object_id=%s (新規=%s), initial_info='%s'",
+                object_id, msg.get("object_id") is None, initial_info[:30] if initial_info else "")
 
     # ─── 代表フレーム処理 ──────────────────────────────────────
     t0 = time.time()
@@ -197,24 +199,41 @@ def _process(msg: dict):
                 len(all_vectors), (time.time() - t_vec) * 1000)
 
     # ─── DynamoDB 物体テーブル登録 ─────────────────────────────
+    # 初期情報があれば info リストに入れる
+    initial_info_list = []
+    if initial_info:
+        # Cognito user_id は SQS 経由では取れないので "system" とする
+        # (register Lambda で event から取得して渡すことも可能だが、簡易実装)
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
+        initial_info_list = [{"text": initial_info, "user_id": "registrant", "created_at": now}]
+
     try:
         objects_table.put_item(
             Item={
                 "object_id": object_id,
                 "thumbnail_key": thumbnail_key,
-                "info": [],
+                "info": initial_info_list,
             },
             ConditionExpression="attribute_not_exists(object_id)",
         )
-        logger.info("[register-worker] DynamoDB 物体レコード新規作成: object_id=%s", object_id)
+        logger.info("[register-worker] DynamoDB 物体レコード新規作成: object_id=%s, info_count=%d",
+                    object_id, len(initial_info_list))
     except ClientError as e:
         if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            # 既存レコード → サムネ更新 + 情報追記
+            update_expr = "SET thumbnail_key = :tk"
+            attr_values: dict = {":tk": thumbnail_key}
+            if initial_info_list:
+                update_expr += ", info = list_append(if_not_exists(info, :empty), :new_info)"
+                attr_values[":new_info"] = initial_info_list
+                attr_values[":empty"] = []
             objects_table.update_item(
                 Key={"object_id": object_id},
-                UpdateExpression="SET thumbnail_key = :tk",
-                ExpressionAttributeValues={":tk": thumbnail_key},
+                UpdateExpression=update_expr,
+                ExpressionAttributeValues=attr_values,
             )
-            logger.info("[register-worker] DynamoDB 既存レコードのサムネ更新: object_id=%s", object_id)
+            logger.info("[register-worker] DynamoDB 既存レコード更新: object_id=%s", object_id)
         else:
             raise
 

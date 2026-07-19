@@ -3,6 +3,7 @@
 import { useRef, useState, useCallback } from "react";
 import Camera, { CameraHandle } from "./camera";
 import FrameSelector from "./frame-selector";
+import InfoInput from "./info-input";
 import BboxSelector from "./bbox-selector";
 import JobProgress from "./job-progress";
 import {
@@ -27,6 +28,7 @@ type FlowState =
   | "frame-select"  // サムネ用代表画像選択
   | "uploading"     // S3 アップロード中
   | "bbox"          // BBox 候補選択
+  | "info-input"    // 物体情報入力
   | "registering"   // 登録リクエスト中
   | "polling"       // ジョブ進捗ポーリング
   | "done"          // 完了
@@ -44,6 +46,7 @@ export default function RegisterFlow() {
   const [uploadProgress, setUploadProgress] = useState({ done: 0, total: 0 });
   const [bboxData, setBboxData] = useState<BboxCandidatesResponse | null>(null);
   const [representativeUrl, setRepresentativeUrl] = useState<string | null>(null);
+  const [selectedBox, setSelectedBox] = useState<number[] | null>(null);
   const [jobId, setJobId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -142,16 +145,26 @@ export default function RegisterFlow() {
     [prunedFrames]
   );
 
-  // ─── Step 4: BBox 選択確定 → 登録 ──────────────────────────
+  // ─── Step 4: BBox 選択確定 → 情報入力へ ─────────────────────
   const handleBboxConfirm = useCallback(
     async (box: number[]) => {
+      setSelectedBox(box);
       console.log("[register-flow] BBox 選択確定:", box);
+      setState("info-input");
+    },
+    []
+  );
+
+  // ─── Step 5: 情報入力確定 → 登録 ───────────────────────────
+  const handleInfoConfirm = useCallback(
+    async (infoText: string) => {
+      console.log("[register-flow] 情報入力確定:", infoText);
       console.log("[register-flow] 登録リクエスト送信中... (全 %d 枚)", uploadedKeys.length);
       setState("registering");
 
       try {
         const representativeKey = uploadedKeys[representativeIdx];
-        const res = await registerObject(uploadedKeys, representativeKey, box);
+        const res = await registerObject(uploadedKeys, representativeKey, selectedBox!, undefined, infoText);
         console.log("[register-flow] 登録ジョブ投入成功:", res);
         setJobId(res.job_id);
         setState("polling");
@@ -162,7 +175,7 @@ export default function RegisterFlow() {
         setState("error");
       }
     },
-    [uploadedKeys, representativeIdx]
+    [uploadedKeys, representativeIdx, selectedBox]
   );
 
   // ─── Step 5: ジョブ完了 ─────────────────────────────────────
@@ -289,6 +302,11 @@ export default function RegisterFlow() {
             onConfirm={handleBboxConfirm}
           />
         </div>
+      )}
+
+      {/* ─── 物体情報入力 ─── */}
+      {state === "info-input" && representativeUrl && (
+        <InfoInput imageUrl={representativeUrl} onConfirm={handleInfoConfirm} />
       )}
 
       {/* ─── 登録リクエスト送信中 ─── */}
