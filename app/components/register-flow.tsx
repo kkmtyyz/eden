@@ -4,7 +4,6 @@ import { useRef, useState, useCallback } from "react";
 import Camera, { CameraHandle } from "./camera";
 import FrameSelector from "./frame-selector";
 import InfoInput from "./info-input";
-import BboxSelector from "./bbox-selector";
 import JobProgress from "./job-progress";
 import {
   createFrameCaptureSession,
@@ -15,7 +14,6 @@ import { uploadImages } from "../lib/upload";
 import {
   getBboxCandidates,
   registerObject,
-  BboxCandidatesResponse,
 } from "../lib/api";
 
 /**
@@ -27,7 +25,6 @@ type FlowState =
   | "pruning"       // プルーニング中
   | "frame-select"  // サムネ用代表画像選択
   | "uploading"     // S3 アップロード中
-  | "bbox"          // BBox 候補選択
   | "info-input"    // 物体情報入力
   | "registering"   // 登録リクエスト中
   | "polling"       // ジョブ進捗ポーリング
@@ -44,7 +41,6 @@ export default function RegisterFlow() {
   const [representativeIdx, setRepresentativeIdx] = useState(0);
   const [uploadedKeys, setUploadedKeys] = useState<string[]>([]);
   const [uploadProgress, setUploadProgress] = useState({ done: 0, total: 0 });
-  const [bboxData, setBboxData] = useState<BboxCandidatesResponse | null>(null);
   const [representativeUrl, setRepresentativeUrl] = useState<string | null>(null);
   const [selectedBox, setSelectedBox] = useState<number[] | null>(null);
   const [jobId, setJobId] = useState<string | null>(null);
@@ -128,13 +124,22 @@ export default function RegisterFlow() {
         console.log("[register-flow] BBox 候補取得中:", { representativeKey });
         const bboxRes = await getBboxCandidates(representativeKey);
         console.log("[register-flow] BBox 候補:", bboxRes);
-        setBboxData(bboxRes);
 
         // 代表フレームのプレビュー用 URL
         const previewUrl = URL.createObjectURL(prunedFrames[selectedIdx].blob);
         setRepresentativeUrl(previewUrl);
 
-        setState("bbox");
+        // BBox 自動選択: default_index があればそれを使い、なければ最初の候補
+        if (bboxRes.boxes.length === 0) {
+          throw new Error("物体が検出されませんでした。撮り直してください。");
+        }
+        const autoIdx = bboxRes.default_index ?? 0;
+        const autoBox = bboxRes.boxes[autoIdx];
+        setSelectedBox(autoBox);
+        console.log("[register-flow] BBox 自動選択:", { autoIdx, autoBox });
+
+        // BBox 選択ステップをスキップして情報入力へ
+        setState("info-input");
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         console.error("[register-flow] エラー:", msg);
@@ -145,15 +150,7 @@ export default function RegisterFlow() {
     [prunedFrames]
   );
 
-  // ─── Step 4: BBox 選択確定 → 情報入力へ ─────────────────────
-  const handleBboxConfirm = useCallback(
-    async (box: number[]) => {
-      setSelectedBox(box);
-      console.log("[register-flow] BBox 選択確定:", box);
-      setState("info-input");
-    },
-    []
-  );
+  // ─── Step 4: (BBox は自動選択済み) ──────────────────────────
 
   // ─── Step 5: 情報入力確定 → 登録 ───────────────────────────
   const handleInfoConfirm = useCallback(
@@ -200,7 +197,6 @@ export default function RegisterFlow() {
     setRepresentativeIdx(0);
     setUploadedKeys([]);
     setUploadProgress({ done: 0, total: 0 });
-    setBboxData(null);
     setRepresentativeUrl(null);
     setJobId(null);
     setError(null);
@@ -284,23 +280,6 @@ export default function RegisterFlow() {
               }}
             />
           </div>
-        </div>
-      )}
-
-      {/* ─── BBox 候補選択 ─── */}
-      {state === "bbox" && bboxData && representativeUrl && (
-        <div className="flex-1 flex flex-col mt-12 mb-16 overflow-y-auto">
-          <p className="text-center text-sm text-white/70 py-3">
-            登録する物体をタップしてください
-          </p>
-          <BboxSelector
-            imageUrl={representativeUrl}
-            imageWidth={bboxData.image_size[0]}
-            imageHeight={bboxData.image_size[1]}
-            boxes={bboxData.boxes}
-            defaultIndex={bboxData.default_index}
-            onConfirm={handleBboxConfirm}
-          />
         </div>
       )}
 
