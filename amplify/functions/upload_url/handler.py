@@ -8,11 +8,19 @@ from botocore.config import Config
 import boto3
 
 IMAGE_BUCKET = os.environ["IMAGE_BUCKET"]
+REGION = os.environ.get("AWS_REGION", "ap-northeast-1")
 
-# Signature V4 を明示的に指定（V2 だと CORS preflight で問題が出る場合あり）
+# Signature V4 + リージョン明示。
+# これにより presigned URL が
+#   https://<bucket>.s3.<region>.amazonaws.com/...
+# 形式で発行され、307 リダイレクト + CORS 問題を回避できる。
 s3_client = boto3.client(
     "s3",
-    config=Config(signature_version="s3v4"),
+    region_name=REGION,
+    config=Config(
+        signature_version="s3v4",
+        s3={"addressing_style": "virtual"},
+    ),
 )
 
 # presigned URL の有効期限 (秒)
