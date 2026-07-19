@@ -1,4 +1,7 @@
 experiments/crops
 experiments/crops_rekognition
 experiments/dataset
+experiments/dataset_bkp
+experiments/debug_crops
+experiments/query_dataset
 experiments/test_pic
