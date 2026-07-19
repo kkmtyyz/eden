@@ -32,11 +32,12 @@ export default function SearchResult({
         <img src={imageUrl} alt="検索画像" className="w-full block" />
         {results.map((item, idx) => {
           const [x1, y1, x2, y2] = item.box;
+          // BBox は 0-1000 正規化スケールなので 1000 で割る
           const style = {
-            left: `${(x1 / imageWidth) * 100}%`,
-            top: `${(y1 / imageHeight) * 100}%`,
-            width: `${((x2 - x1) / imageWidth) * 100}%`,
-            height: `${((y2 - y1) / imageHeight) * 100}%`,
+            left: `${(x1 / 1000) * 100}%`,
+            top: `${(y1 / 1000) * 100}%`,
+            width: `${((x2 - x1) / 1000) * 100}%`,
+            height: `${((y2 - y1) / 1000) * 100}%`,
           };
           return (
             <button
