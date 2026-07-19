@@ -26,7 +26,7 @@ def handler(event, context):
 
     now = datetime.now(timezone.utc).isoformat()
 
-    # info リストに追記
+    # info リストに追記 (物体レコードがなければ新規作成)
     try:
         objects_table.update_item(
             Key={"object_id": object_id},
@@ -35,10 +35,9 @@ def handler(event, context):
                 ":new_info": [{"text": text, "user_id": user_id, "created_at": now}],
                 ":empty": [],
             },
-            ConditionExpression="attribute_exists(object_id)",
         )
-    except dynamodb.meta.client.exceptions.ConditionalCheckFailedException:
-        return _error(404, "object not found")
+    except Exception as e:
+        return _error(500, f"failed to update: {str(e)}")
 
     return {
         "statusCode": 200,
