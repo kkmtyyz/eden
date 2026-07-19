@@ -1,16 +1,22 @@
-import boto3
+"""BBox検出の Rekognition 版比較実験。eden.clients を利用。"""
+
 import sys
 from pathlib import Path
-from io import BytesIO
+
+import boto3
 from PIL import Image, ImageDraw
 
-REGION = "ap-northeast-1"
+from eden.clients import get_rekognition_client
+from eden.image_util import jpeg_bytes
+
+PROFILE = "kkmtyyz_mfa"
 MAX_SIZE = 1280  # Nova版と条件を揃える
 
-session = boto3.Session(profile_name="kkmtyyz_mfa")
-client = session.client("rekognition", region_name=REGION)
+session = boto3.Session(profile_name=PROFILE)
+client = get_rekognition_client(session=session)
 
 MIN_CONFIDENCE = 50  # 検出感度。比較目的なら下げてもいい
+PAD = 0.12  # Nova版と同じ余白
 
 
 def load_resized(path):
@@ -21,13 +27,10 @@ def load_resized(path):
 
 def detect(img_path):
     img = load_resized(img_path)
-    buf = BytesIO()
-    img.save(buf, format="JPEG", quality=90)
 
     resp = client.detect_labels(
-        Image={"Bytes": buf.getvalue()},
+        Image={"Bytes": jpeg_bytes(img)},
         MinConfidence=MIN_CONFIDENCE,
-        # MaxLabels=100,
     )
 
     # Instances(=bbox付き)を持つラベルだけ集める
@@ -52,7 +55,6 @@ def main(img_path):
     out_dir.mkdir(exist_ok=True)
     vis = img.copy()
     draw = ImageDraw.Draw(vis)
-    PAD = 0.12  # Nova版と同じ余白
 
     print(f"detected instances: {len(dets)}")
 

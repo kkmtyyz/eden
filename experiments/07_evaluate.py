@@ -1,5 +1,5 @@
-# 07_evaluate.py
-"""評価: query_dataset/ を回して本人/他人ペアのスコア分布を出す
+"""評価スクリプト: query_dataset/ を回して本人/他人ペアのスコア分布を出す。
+
 フォルダ名が登録済みobject_idと一致 → 正解=そのid(本人ペア)
 フォルダ名が unknown_ 始まり → 正解=未登録(他人ペア)
 """
@@ -7,11 +7,37 @@
 import csv
 from pathlib import Path
 
+import boto3
 import numpy as np
-from importlib import import_module
 
-reg = import_module("05_register_objects")
-search = import_module("06_search")
+from eden.clients import (
+    get_bedrock_client,
+    get_bedrock_embed_client,
+    get_bedrock_text_client,
+    get_s3vectors_client,
+)
+from eden.image_util import load_image
+from eden.search import search_image
+
+PROFILE = "kkmtyyz_mfa"
+
+session = boto3.Session(profile_name=PROFILE)
+bbox_client = get_bedrock_client(session=session)
+embed_client = get_bedrock_embed_client(session=session)
+text_client = get_bedrock_text_client(session=session)
+s3v_client = get_s3vectors_client(session=session)
+
+
+def search_image_file(path):
+    """画像ファイルから検索(クロップ込み)"""
+    img = load_image(path)
+    return search_image(
+        img,
+        bbox_client=bbox_client,
+        embed_client=embed_client,
+        s3v_client=s3v_client,
+        text_client=text_client,
+    )
 
 
 def main():
@@ -23,27 +49,27 @@ def main():
 
         for f in sorted(obj_dir.glob("*.jpg")) + sorted(obj_dir.glob("*.png")):
             print(f"query: {f}")
-            r = search.search_image_file(f)
-            correct_id = (truth is not None) and (r.get("object_id") == truth)
+            r = search_image_file(str(f))
+            correct_id = (truth is not None) and (r.object_id == truth)
             rows.append(
                 {
                     "file": str(f),
                     "truth": truth or "UNREGISTERED",
-                    "predicted": r.get("object_id", ""),
-                    "verdict": r["verdict"],
-                    "sim": r.get("sim", 0.0),
-                    "sim_raw": r.get("sim_raw", 0.0),
-                    "raw_top1_id": r.get("raw_top1_id", ""),
-                    "rank_changed": r.get("rank_changed", False),
-                    "margin": r.get("margin", 0.0),
-                    "votes": r.get("votes", 0),
-                    "text_hit": r.get("text_hit", False),
+                    "predicted": r.object_id or "",
+                    "verdict": r.verdict,
+                    "sim": r.sim,
+                    "sim_raw": r.sim_raw,
+                    "raw_top1_id": r.raw_top1_id or "",
+                    "rank_changed": r.rank_changed,
+                    "margin": r.margin,
+                    "votes": r.votes,
+                    "text_hit": r.text_hit,
                     "id_correct": correct_id,
                 }
             )
             print(
-                f"  -> {r['verdict']} pred={r.get('object_id')} "
-                f"sim={r.get('sim')} margin={r.get('margin')} votes={r.get('votes')}"
+                f"  -> {r.verdict} pred={r.object_id} "
+                f"sim={r.sim} margin={r.margin} votes={r.votes}"
             )
 
     # CSV保存
@@ -109,13 +135,13 @@ def main():
     saved = [
         r
         for r in rows
-        if r["verdict"] == "green" and r["sim"] >= 0.80 and r["sim_raw"] < 0.80
+        if r["verdict"] == "green" and r["sim"] >= 0.85 and r["sim_raw"] < 0.85
     ]
     print(f"文字ブーストが無ければ緑を逃してたクエリ: {len(saved)}件")
     for r in saved:
         print(f"   {r['file']}: sim_raw={r['sim_raw']} -> sim={r['sim']}")
 
-    print("\n=> eval_result.csv を保存。分布の谷を見て 06_search.py のTHを調整してね")
+    print("\n=> eval_result.csv を保存。分布の谷を見て閾値を調整してね")
 
 
 if __name__ == "__main__":

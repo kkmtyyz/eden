@@ -1,33 +1,19 @@
+"""未登録物体のテストスクリプト。eden.embedding を利用。"""
+
 import sys
-import numpy as np
 from pathlib import Path
-from PIL import Image
-from io import BytesIO
-import json
+
 import boto3
+import numpy as np
 
-REGION = "us-east-1"
-MODEL_ID = "amazon.titan-embed-image-v1"
-session = boto3.Session(profile_name="kkmtyyz_mfa")
-client = session.client("bedrock-runtime", region_name=REGION)
+from eden.clients import get_bedrock_embed_client
+from eden.embedding import embed_image
+from eden.image_util import load_image
 
+PROFILE = "kkmtyyz_mfa"
 
-def embed_image(path):
-    img = Image.open(path).convert("RGB")
-    img.thumbnail((1024, 1024))
-    buf = BytesIO()
-    img.save(buf, format="JPEG", quality=90)
-    import base64
-
-    b64 = base64.b64encode(buf.getvalue()).decode()
-    resp = client.invoke_model(
-        modelId=MODEL_ID,
-        body=json.dumps(
-            {"inputImage": b64, "embeddingConfig": {"outputEmbeddingLength": 1024}}
-        ),
-    )
-    v = np.array(json.loads(resp["body"].read())["embedding"], dtype=np.float32)
-    return v / np.linalg.norm(v)
+session = boto3.Session(profile_name=PROFILE)
+client = get_bedrock_embed_client(session=session)
 
 
 def main(unknown_dir):
@@ -37,7 +23,9 @@ def main(unknown_dir):
 
     print(f"{'file':40s} {'nearest_label':20s} {'distance':>8s}  judge(θ=0.20)")
     for f in sorted(Path(unknown_dir).glob("*.jpg")):
-        qv = embed_image(f)
+        img = load_image(str(f))
+        qv = embed_image(img, client=client)
+        qv = qv / np.linalg.norm(qv)
         dist = 1.0 - vecs @ qv
         idx = dist.argmin()
         d_min = dist[idx]
