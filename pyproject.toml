@@ -1,0 +1,17 @@
+[project]
+name = "eden"
+version = "0.1.0"
+description = "物体認識・登録・検索の共通モジュール"
+requires-python = ">=3.11"
+dependencies = [
+    "boto3",
+    "numpy",
+    "Pillow",
+]
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["eden*"]
