@@ -5,3 +5,4 @@ experiments/dataset_bkp
 experiments/debug_crops
 experiments/query_dataset
 experiments/test_pic
+__pycache__/
