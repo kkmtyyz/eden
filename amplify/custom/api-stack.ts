@@ -43,9 +43,14 @@ export class ApiStack extends Construct {
     const imageBucket = new s3.Bucket(this, "ImageBucket", {
       cors: [
         {
-          allowedMethods: [s3.HttpMethods.PUT, s3.HttpMethods.GET],
+          allowedMethods: [
+            s3.HttpMethods.PUT,
+            s3.HttpMethods.GET,
+            s3.HttpMethods.HEAD,
+          ],
           allowedOrigins: ["*"],
           allowedHeaders: ["*"],
+          exposedHeaders: ["ETag", "x-amz-request-id"],
         },
       ],
       removalPolicy: cdk.RemovalPolicy.DESTROY,
