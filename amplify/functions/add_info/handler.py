@@ -1,10 +1,14 @@
 """POST /objects/{id}/info: DynamoDB の info リストに追記する。"""
 
 import json
+import logging
 import os
 from datetime import datetime, timezone
 
 import boto3
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
 
 OBJECTS_TABLE = os.environ["OBJECTS_TABLE"]
 
@@ -17,12 +21,16 @@ def handler(event, context):
     body = json.loads(event.get("body") or "{}")
     text = body.get("text", "").strip()
 
+    logger.info("[add-info] リクエスト受信: object_id=%s, text='%s'", object_id, text[:50])
+
     if not text:
+        logger.warning("[add-info] text が空")
         return _error(400, "text is required")
 
     # Cognito authorizer から user_id を取得
     claims = event.get("requestContext", {}).get("authorizer", {}).get("claims", {})
     user_id = claims.get("sub", "unknown")
+    logger.info("[add-info] user_id=%s", user_id)
 
     now = datetime.now(timezone.utc).isoformat()
 
@@ -36,7 +44,9 @@ def handler(event, context):
                 ":empty": [],
             },
         )
+        logger.info("[add-info] 情報追記成功: object_id=%s", object_id)
     except Exception as e:
+        logger.error("[add-info] DynamoDB 更新失敗: object_id=%s, error=%s", object_id, str(e))
         return _error(500, f"failed to update: {str(e)}")
 
     return {

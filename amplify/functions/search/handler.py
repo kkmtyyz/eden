@@ -2,7 +2,9 @@
 
 import asyncio
 import json
+import logging
 import os
+import time
 from io import BytesIO
 
 import boto3
@@ -13,6 +15,9 @@ from eden.crop import crop_bbox, select_center_object
 from eden.detection import detect_boxes
 from eden.image_util import exif_transpose, jpeg_bytes
 from eden.search import search_object
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
 
 IMAGE_BUCKET = os.environ["IMAGE_BUCKET"]
 OBJECTS_TABLE = os.environ["OBJECTS_TABLE"]
@@ -33,22 +38,31 @@ def handler(event, context):
     key = body.get("key")
     boxes_override = body.get("boxes")  # フロントで選択済みのBBoxを渡す場合
 
+    logger.info("[search] リクエスト受信: key=%s, boxes_override=%s", key, boxes_override is not None)
+
     if not key:
+        logger.warning("[search] key が未指定")
         return _error(400, "key is required")
 
     # S3から画像取得
+    t0 = time.time()
     obj = s3_client.get_object(Bucket=IMAGE_BUCKET, Key=key)
     img = Image.open(BytesIO(obj["Body"].read()))
     img = exif_transpose(img).convert("RGB")
     img.thumbnail((config.MAX_IMAGE_SIZE, config.MAX_IMAGE_SIZE))
+    logger.info("[search] 画像取得: size=%s, %.1fms", img.size, (time.time() - t0) * 1000)
 
     # BBox検出 (オーバーライドがなければ自動検出)
     if boxes_override:
         boxes = boxes_override
+        logger.info("[search] BBox オーバーライド使用: %d個", len(boxes))
     else:
+        t1 = time.time()
         boxes = detect_boxes(img, client=bedrock_client)
+        logger.info("[search] BBox検出完了: %d個, %.1fms", len(boxes), (time.time() - t1) * 1000)
 
     if not boxes:
+        logger.info("[search] 物体検出なし → 空レスポンス")
         return {
             "statusCode": 200,
             "headers": _headers(),
@@ -58,9 +72,17 @@ def handler(event, context):
     # 中央スコア順に上位N個を選択
     scored = sorted(boxes, key=lambda b: _center_score(b))
     candidates = scored[:MAX_CANDIDATES]
+    logger.info("[search] 候補選定: %d → %d個", len(boxes), len(candidates))
 
     # 各候補を検索 (asyncioで並列化)
+    t2 = time.time()
     results = asyncio.run(_search_candidates(img, candidates))
+    logger.info("[search] 全候補検索完了: %.1fms", (time.time() - t2) * 1000)
+
+    # 結果サマリー
+    for i, r in enumerate(results):
+        logger.info("[search] 結果[%d]: verdict=%s, sim=%.3f, margin=%.3f, object_id=%s, text_hit=%s",
+                    i, r["verdict"], r["sim"], r["margin"], r["object_id"], r["text_hit"])
 
     return {
         "statusCode": 200,
@@ -81,13 +103,18 @@ async def _search_candidates(img: Image.Image, candidates: list) -> list:
 
 def _search_single(img: Image.Image, box: list) -> dict:
     """1つのBBoxに対して検索を実行する。"""
+    t0 = time.time()
     crop_img = crop_bbox(img, box)
+    logger.info("[search] BBox検索開始: box=%s, crop_size=%s", box, crop_img.size)
+
     result = search_object(
         crop_img,
         embed_client=embed_client,
         s3v_client=s3v_client,
         text_client=text_client,
     )
+    logger.info("[search] BBox検索完了: box=%s, verdict=%s, sim=%.3f, %.1fms",
+                box, result.verdict, result.sim, (time.time() - t0) * 1000)
 
     # 物体情報を付加
     info = None
@@ -100,8 +127,10 @@ def _search_single(img: Image.Image, box: list) -> dict:
                 "thumbnail_key": item.get("thumbnail_key"),
                 "info": item.get("info", []),
             }
-        except Exception:
-            pass
+            logger.info("[search] DynamoDB 物体情報取得: object_id=%s, info_count=%d",
+                        result.object_id, len(item.get("info", [])))
+        except Exception as e:
+            logger.warning("[search] DynamoDB 物体情報取得失敗: object_id=%s, error=%s", result.object_id, str(e))
 
     return {
         "box": box,

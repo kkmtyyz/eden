@@ -1,11 +1,15 @@
 """POST /upload-url: S3 presigned PUT URL を発行する。"""
 
 import json
+import logging
 import os
 import uuid
 
 from botocore.config import Config
 import boto3
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
 
 IMAGE_BUCKET = os.environ["IMAGE_BUCKET"]
 REGION = os.environ.get("AWS_REGION", "ap-northeast-1")
@@ -32,6 +36,8 @@ def handler(event, context):
     content_type = body.get("content_type", "image/jpeg")
     filename = body.get("filename", "image.jpg")
 
+    logger.info("[upload-url] リクエスト受信: content_type=%s, filename=%s", content_type, filename)
+
     # ユニークなキーを生成
     ext = filename.rsplit(".", 1)[-1] if "." in filename else "jpg"
     key = f"uploads/{uuid.uuid4()}.{ext}"
@@ -46,6 +52,8 @@ def handler(event, context):
         },
         ExpiresIn=PRESIGNED_EXPIRY,
     )
+
+    logger.info("[upload-url] presigned URL 発行完了: key=%s, bucket=%s, expires=%ds", key, IMAGE_BUCKET, PRESIGNED_EXPIRY)
 
     return {
         "statusCode": 200,
