@@ -10,6 +10,7 @@ import * as s3 from "aws-cdk-lib/aws-s3";
 import * as sqs from "aws-cdk-lib/aws-sqs";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as cognito from "aws-cdk-lib/aws-cognito";
+import * as s3vectors from "aws-cdk-lib/aws-s3vectors";
 import * as lambdaEventSources from "aws-cdk-lib/aws-lambda-event-sources";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -62,6 +63,25 @@ export class ApiStack extends Construct {
       visibilityTimeout: cdk.Duration.minutes(15),
       retentionPeriod: cdk.Duration.days(3),
     });
+
+    // ─── S3 Vectors (ベクトル検索) ────────────────────────────────
+    const vectorBucket = new s3vectors.CfnVectorBucket(this, "VectorBucket", {
+      vectorBucketName: `eden-vectors-${cdk.Stack.of(this).account}-${cdk.Stack.of(this).region}`,
+    });
+    vectorBucket.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+
+    const vectorIndex = new s3vectors.CfnIndex(this, "VectorIndex", {
+      vectorBucketName: vectorBucket.vectorBucketName!,
+      indexName: "eden-index",
+      dataType: "float32",
+      dimension: 1024,
+      distanceMetric: "cosine",
+      metadataConfiguration: {
+        nonFilterableMetadataKeys: ["label", "source_file", "rotation"],
+      },
+    });
+    vectorIndex.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+    vectorIndex.addDependency(vectorBucket);
 
     // ─── Lambda Layer (eden パッケージ) ───────────────────────────
     const edenLayer = new lambda.LayerVersion(this, "EdenLayer", {
@@ -119,6 +139,8 @@ export class ApiStack extends Construct {
         JOBS_TABLE: jobsTable.tableName,
         IMAGE_BUCKET: imageBucket.bucketName,
         REGISTER_QUEUE_URL: registerQueue.queueUrl,
+        EDEN_VECTOR_BUCKET: vectorBucket.vectorBucketName!,
+        EDEN_VECTOR_INDEX: "eden-index",
       },
     };
 
@@ -224,6 +246,7 @@ export class ApiStack extends Construct {
         "s3vectors:PutVectors",
         "s3vectors:QueryVectors",
         "s3vectors:GetVectors",
+        "s3vectors:DeleteVectors",
       ],
       resources: ["*"],
     });
