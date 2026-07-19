@@ -104,12 +104,35 @@ const Camera = forwardRef<CameraHandle, CameraProps>(function Camera(
       return null;
     }
 
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
     const ctx = canvas.getContext("2d");
     if (!ctx) return null;
 
-    ctx.drawImage(video, 0, 0);
+    // video 要素の表示サイズ（=ユーザーが見ている範囲）に合わせてクロップ
+    // object-cover の場合、ビデオの一部だけが見えている
+    const videoW = video.videoWidth;
+    const videoH = video.videoHeight;
+    const elemW = video.clientWidth;
+    const elemH = video.clientHeight;
+
+    // object-cover の計算: どちら方向がはみ出しているか
+    const videoAspect = videoW / videoH;
+    const elemAspect = elemW / elemH;
+
+    let sx = 0, sy = 0, sw = videoW, sh = videoH;
+
+    if (videoAspect > elemAspect) {
+      // ビデオが横に広い → 左右がはみ出し
+      sw = videoH * elemAspect;
+      sx = (videoW - sw) / 2;
+    } else {
+      // ビデオが縦に長い → 上下がはみ出し
+      sh = videoW / elemAspect;
+      sy = (videoH - sh) / 2;
+    }
+
+    canvas.width = Math.round(sw);
+    canvas.height = Math.round(sh);
+    ctx.drawImage(video, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
 
     const dataUrl = canvas.toDataURL("image/jpeg", 0.85);
     const binary = atob(dataUrl.split(",")[1]);
@@ -119,8 +142,9 @@ const Camera = forwardRef<CameraHandle, CameraProps>(function Camera(
     }
     const blob = new Blob([arr], { type: "image/jpeg" });
     console.log("[camera] フレームキャプチャ:", {
-      width: canvas.width,
-      height: canvas.height,
+      videoSize: `${videoW}x${videoH}`,
+      cropRegion: `sx=${Math.round(sx)},sy=${Math.round(sy)},sw=${Math.round(sw)},sh=${Math.round(sh)}`,
+      outputSize: `${canvas.width}x${canvas.height}`,
       blobSize: blob.size,
     });
     return blob;
@@ -155,7 +179,7 @@ const Camera = forwardRef<CameraHandle, CameraProps>(function Camera(
   }
 
   return (
-    <div className="relative w-full flex-1 flex items-center justify-center bg-black mt-12 mb-16 overflow-hidden max-h-[60dvh]">
+    <div className="relative w-full flex-1 flex items-center justify-center bg-black mt-12 mb-16 overflow-hidden max-h-[70dvh]">
       <video
         ref={videoRef}
         autoPlay
