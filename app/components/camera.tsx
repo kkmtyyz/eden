@@ -155,7 +155,7 @@ const Camera = forwardRef<CameraHandle, CameraProps>(function Camera(
   }
 
   return (
-    <div className="relative w-full flex-1 flex items-center justify-center bg-black mt-12 mb-16 overflow-hidden">
+    <div className="relative w-full flex-1 flex items-center justify-center bg-black mt-12 mb-16 overflow-hidden max-h-[60dvh]">
       <video
         ref={videoRef}
         autoPlay

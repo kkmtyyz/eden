@@ -30,7 +30,7 @@ embed_client = boto3.client("bedrock-runtime", region_name=config.EMBED_REGION)
 text_client = boto3.client("bedrock-runtime", region_name=config.TEXT_REGION)
 s3v_client = boto3.client("s3vectors", region_name=config.VECTOR_REGION)
 
-MAX_CANDIDATES = 5
+MAX_CANDIDATES = 10
 
 
 def handler(event, context):

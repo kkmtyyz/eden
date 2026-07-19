@@ -20,7 +20,7 @@ VECTOR_BUCKET: str = os.getenv("EDEN_VECTOR_BUCKET", "my-s3-vector-bucket")
 VECTOR_INDEX: str = os.getenv("EDEN_VECTOR_INDEX", "my-s3-vector-index")
 
 # ─── 判定閾値 ─────────────────────────────────────────────────
-GREEN_SIM: float = float(os.getenv("EDEN_GREEN_SIM", "0.85"))
+GREEN_SIM: float = float(os.getenv("EDEN_GREEN_SIM", "0.80"))
 GREEN_MARGIN: float = float(os.getenv("EDEN_GREEN_MARGIN", "0.10"))
 YELLOW_SIM: float = float(os.getenv("EDEN_YELLOW_SIM", "0.72"))
 TEXT_BOOST: float = float(os.getenv("EDEN_TEXT_BOOST", "0.05"))
