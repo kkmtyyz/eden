@@ -167,3 +167,16 @@ export function addObjectInfo(
     body: JSON.stringify({ text }),
   });
 }
+
+export interface DownloadUrlResponse {
+  download_url: string;
+  expires_in: number;
+}
+
+export function getDownloadUrl(key: string): Promise<DownloadUrlResponse> {
+  console.log("[api] getDownloadUrl 呼び出し:", { key });
+  return apiRequest("/download-url", {
+    method: "POST",
+    body: JSON.stringify({ key }),
+  });
+}

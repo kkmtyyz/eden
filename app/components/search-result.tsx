@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useCallback } from "react";
-import { SearchResultItem, addObjectInfo } from "../lib/api";
+import { useState, useCallback, useEffect } from "react";
+import { SearchResultItem, addObjectInfo, getDownloadUrl } from "../lib/api";
 import { BBOX_BORDER_WIDTH } from "../lib/ui-config";
 
 interface SearchResultProps {
@@ -103,6 +103,26 @@ function GreenPanel({
   const [infoText, setInfoText] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [infoList, setInfoList] = useState(item.object_info?.info || []);
+  const [thumbnailUrl, setThumbnailUrl] = useState<string | null>(null);
+  const [thumbnailLoading, setThumbnailLoading] = useState(false);
+
+  useEffect(() => {
+    const key = item.object_info?.thumbnail_key;
+    if (!key) return;
+    let cancelled = false;
+    setThumbnailLoading(true);
+    getDownloadUrl(key)
+      .then((res) => {
+        if (!cancelled) setThumbnailUrl(res.download_url);
+      })
+      .catch((err) => {
+        console.error("[GreenPanel] サムネイル取得失敗:", err);
+      })
+      .finally(() => {
+        if (!cancelled) setThumbnailLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [item.object_info?.thumbnail_key]);
 
   const handleAddInfo = useCallback(async () => {
     if (!infoText.trim() || !item.object_id) return;
@@ -137,9 +157,23 @@ function GreenPanel({
       </div>
 
       {item.object_info?.thumbnail_key && (
-        <p className="text-xs text-white/50 mb-2">
-          登録済み物体 (ID: {item.object_id?.slice(0, 8)}...)
-        </p>
+        <div className="mb-3">
+          {thumbnailLoading && (
+            <div className="w-full h-24 bg-white/5 rounded-lg flex items-center justify-center">
+              <span className="text-xs text-white/40">読み込み中...</span>
+            </div>
+          )}
+          {thumbnailUrl && !thumbnailLoading && (
+            <img
+              src={thumbnailUrl}
+              alt="登録済み物体のサムネイル"
+              className="w-full max-h-36 object-contain rounded-lg border border-white/10"
+            />
+          )}
+          <p className="text-xs text-white/50 mt-1">
+            登録済み物体 (ID: {item.object_id?.slice(0, 8)}...)
+          </p>
+        </div>
       )}
 
       {/* 既存情報一覧 */}
@@ -189,6 +223,26 @@ function YellowPanel({
   onClose: () => void;
 }) {
   const [confirmed, setConfirmed] = useState<boolean | null>(null);
+  const [thumbnailUrl, setThumbnailUrl] = useState<string | null>(null);
+  const [thumbnailLoading, setThumbnailLoading] = useState(false);
+
+  useEffect(() => {
+    const key = item.object_info?.thumbnail_key;
+    if (!key) return;
+    let cancelled = false;
+    setThumbnailLoading(true);
+    getDownloadUrl(key)
+      .then((res) => {
+        if (!cancelled) setThumbnailUrl(res.download_url);
+      })
+      .catch((err) => {
+        console.error("[YellowPanel] サムネイル取得失敗:", err);
+      })
+      .finally(() => {
+        if (!cancelled) setThumbnailLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [item.object_info?.thumbnail_key]);
 
   return (
     <div className="fixed bottom-14 left-0 right-0 max-h-[50dvh] overflow-y-auto z-[90] bg-neutral-900/95 backdrop-blur-md border-t-[3px] border-yellow-500 p-4 rounded-t-xl animate-slide-up">
@@ -206,10 +260,25 @@ function YellowPanel({
 
       <p className="text-sm mb-3">この物体ですか？</p>
 
+      {/* サムネイル画像 */}
       {item.object_info?.thumbnail_key && (
-        <p className="text-xs text-white/50 mb-2">
-          候補物体 ID: {item.object_id?.slice(0, 8)}...
-        </p>
+        <div className="mb-3">
+          {thumbnailLoading && (
+            <div className="w-full h-32 bg-white/5 rounded-lg flex items-center justify-center">
+              <span className="text-xs text-white/40">読み込み中...</span>
+            </div>
+          )}
+          {thumbnailUrl && !thumbnailLoading && (
+            <img
+              src={thumbnailUrl}
+              alt="候補物体のサムネイル"
+              className="w-full max-h-48 object-contain rounded-lg border border-white/10"
+            />
+          )}
+          <p className="text-xs text-white/50 mt-1">
+            候補物体 ID: {item.object_id?.slice(0, 8)}...
+          </p>
+        </div>
       )}
 
       {confirmed === null && (
