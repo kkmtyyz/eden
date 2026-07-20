@@ -200,6 +200,12 @@ export class ApiStack extends Construct {
       code: lambda.Code.fromAsset(path.join(functionsDir, "add_info")),
     } as lambda.FunctionProps);
 
+    const downloadUrlFn = new lambda.Function(this, "DownloadUrlFn", {
+      ...commonLambdaProps,
+      handler: "handler.handler",
+      code: lambda.Code.fromAsset(path.join(functionsDir, "download_url")),
+    } as lambda.FunctionProps);
+
     // ─── 運用ツール: リセット Lambda ──────────────────────────────
     const resetDataFn = new lambda.Function(this, "ResetDataFn", {
       ...commonLambdaProps,
@@ -233,6 +239,7 @@ export class ApiStack extends Construct {
     imageBucket.grantReadWrite(registerWorkerFn);
     imageBucket.grantRead(bboxCandidatesFn);
     imageBucket.grantRead(searchFn);
+    imageBucket.grantRead(downloadUrlFn);
 
     // SQS
     registerQueue.grantSendMessages(registerFn);
@@ -339,6 +346,13 @@ export class ApiStack extends Construct {
     info.addMethod(
       "POST",
       new apigateway.LambdaIntegration(addInfoFn),
+      authMethodOptions
+    );
+
+    const downloadUrl = api.root.addResource("download-url");
+    downloadUrl.addMethod(
+      "POST",
+      new apigateway.LambdaIntegration(downloadUrlFn),
       authMethodOptions
     );
 
