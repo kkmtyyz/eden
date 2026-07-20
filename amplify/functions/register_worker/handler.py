@@ -145,6 +145,9 @@ def _process(msg: dict):
                 len(selected_frames), NUM_WORKERS)
     t_phase3 = time.time()
 
+    # 新規登録か追加登録かを判定
+    is_new_registration = msg.get("object_id") is None
+
     thumbnail_key = None
 
     def _embed_one(frame_tuple):
@@ -164,9 +167,9 @@ def _process(msg: dict):
             ContentType="image/jpeg",
         )
 
-        # サムネイル（代表画像のみ）
+        # サムネイル（新規登録の代表画像のみ。追加登録時は既存サムネを維持）
         thumb_key = None
-        if key == representative_key:
+        if key == representative_key and is_new_registration:
             thumb = crop_img.copy()
             thumb.thumbnail((256, 256))
             thumb_key = f"thumbnails/{object_id}.jpg"
@@ -262,18 +265,17 @@ def _process(msg: dict):
                     object_id, len(initial_info_list))
     except ClientError as e:
         if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
-            update_expr = "SET thumbnail_key = :tk"
-            attr_values: dict = {":tk": thumbnail_key}
+            # 既存レコード → サムネは変更しない、情報のみ追記
             if initial_info_list:
-                update_expr += ", info = list_append(if_not_exists(info, :empty), :new_info)"
-                attr_values[":new_info"] = initial_info_list
-                attr_values[":empty"] = []
-            objects_table.update_item(
-                Key={"object_id": object_id},
-                UpdateExpression=update_expr,
-                ExpressionAttributeValues=attr_values,
-            )
-            logger.info("[register-worker] DynamoDB 既存レコード更新: object_id=%s", object_id)
+                objects_table.update_item(
+                    Key={"object_id": object_id},
+                    UpdateExpression="SET info = list_append(if_not_exists(info, :empty), :new_info)",
+                    ExpressionAttributeValues={
+                        ":new_info": initial_info_list,
+                        ":empty": [],
+                    },
+                )
+            logger.info("[register-worker] DynamoDB 既存レコード更新 (サムネ維持): object_id=%s", object_id)
         else:
             raise
 
