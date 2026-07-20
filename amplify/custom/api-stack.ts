@@ -104,6 +104,12 @@ export class ApiStack extends Construct {
           { type: "MISCONDUCT", inputStrength: "MEDIUM", outputStrength: "MEDIUM" },
         ],
       },
+      // Standard Tier: 日本語を含む60以上の言語に対応
+      contentFiltersTierConfig: {
+        tier: "STANDARD",
+      },
+      // クロスリージョン推論: Standard Tier に必須。デフォルトプロファイルを使用
+      crossRegionConfig: {},
     });
 
     // ─── Lambda Layer (eden パッケージ) ───────────────────────────
