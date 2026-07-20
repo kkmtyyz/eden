@@ -19,6 +19,7 @@ export default function SearchFlow() {
   const [results, setResults] = useState<SearchResultItem[]>([]);
   const [capturedImageUrl, setCapturedImageUrl] = useState<string | null>(null);
   const [imageSize, setImageSize] = useState<{ w: number; h: number } | null>(null);
+  const [imageKey, setImageKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const handleCapture = useCallback(async () => {
@@ -59,6 +60,7 @@ export default function SearchFlow() {
       setState("uploading");
       const { key } = await uploadImage(blob, `search_${Date.now()}.jpg`);
       console.log("[search-flow] S3 アップロード完了:", { key });
+      setImageKey(key);
 
       // Step 3: 検索 API 呼び出し
       console.log("[search-flow] Step 3: POST /search 呼び出し");
@@ -92,6 +94,7 @@ export default function SearchFlow() {
     }
     setCapturedImageUrl(null);
     setImageSize(null);
+    setImageKey(null);
     setResults([]);
     setError(null);
     setState("camera");
@@ -146,6 +149,7 @@ export default function SearchFlow() {
             imageWidth={imageSize.w}
             imageHeight={imageSize.h}
             results={results}
+            imageKey={imageKey!}
           />
           <button
             className="mx-auto my-4 px-6 py-2 bg-white/15 text-white border border-white/30 rounded-lg text-sm"

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useCallback, useEffect } from "react";
-import { SearchResultItem, addObjectInfo, getDownloadUrl } from "../lib/api";
+import { SearchResultItem, addObjectInfo, getDownloadUrl, registerObject, getJobStatus } from "../lib/api";
 import { BBOX_BORDER_WIDTH } from "../lib/ui-config";
 
 interface SearchResultProps {
@@ -9,6 +9,7 @@ interface SearchResultProps {
   imageWidth: number;
   imageHeight: number;
   results: SearchResultItem[];
+  imageKey: string;
 }
 
 const VERDICT_BORDER: Record<string, string> = {
@@ -22,6 +23,7 @@ export default function SearchResult({
   imageWidth,
   imageHeight,
   results,
+  imageKey,
 }: SearchResultProps) {
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
   const selected = selectedIdx !== null ? results[selectedIdx] : null;
@@ -67,7 +69,7 @@ export default function SearchResult({
 
       {/* 詳細パネル */}
       {selected && (
-        <DetailPanel item={selected} onClose={() => setSelectedIdx(null)} />
+        <DetailPanel item={selected} imageKey={imageKey} onClose={() => setSelectedIdx(null)} />
       )}
     </div>
   );
@@ -77,15 +79,16 @@ export default function SearchResult({
 
 interface DetailPanelProps {
   item: SearchResultItem;
+  imageKey: string;
   onClose: () => void;
 }
 
-function DetailPanel({ item, onClose }: DetailPanelProps) {
+function DetailPanel({ item, imageKey, onClose }: DetailPanelProps) {
   switch (item.verdict) {
     case "green":
       return <GreenPanel item={item} onClose={onClose} />;
     case "yellow":
-      return <YellowPanel item={item} onClose={onClose} />;
+      return <YellowPanel item={item} imageKey={imageKey} onClose={onClose} />;
     case "red":
       return <RedPanel onClose={onClose} />;
   }
@@ -217,14 +220,18 @@ function GreenPanel({
 
 function YellowPanel({
   item,
+  imageKey,
   onClose,
 }: {
   item: SearchResultItem;
+  imageKey: string;
   onClose: () => void;
 }) {
   const [confirmed, setConfirmed] = useState<boolean | null>(null);
   const [thumbnailUrl, setThumbnailUrl] = useState<string | null>(null);
   const [thumbnailLoading, setThumbnailLoading] = useState(false);
+  const [voteStatus, setVoteStatus] = useState<"idle" | "registering" | "polling" | "done" | "error">("idle");
+  const [voteError, setVoteError] = useState<string | null>(null);
 
   useEffect(() => {
     const key = item.object_info?.thumbnail_key;
@@ -243,6 +250,51 @@ function YellowPanel({
       });
     return () => { cancelled = true; };
   }, [item.object_info?.thumbnail_key]);
+
+  const handleVoteYes = useCallback(async () => {
+    if (!item.object_id) return;
+    setConfirmed(true);
+    setVoteStatus("registering");
+
+    try {
+      // 検索画像をそのまま1枚で追加登録 (既存object_idを指定)
+      console.log("[YellowPanel] 投票: registerObject 呼び出し", {
+        imageKey, box: item.box, object_id: item.object_id,
+      });
+      const { job_id } = await registerObject(
+        [imageKey],
+        imageKey,
+        item.box,
+        item.object_id
+      );
+      console.log("[YellowPanel] ジョブ投入完了: job_id=%s", job_id);
+
+      // ポーリング
+      setVoteStatus("polling");
+      const maxAttempts = 40; // 最大 ~2分
+      for (let i = 0; i < maxAttempts; i++) {
+        await new Promise((r) => setTimeout(r, 3000));
+        const status = await getJobStatus(job_id);
+        console.log("[YellowPanel] ジョブ状態:", status.status);
+        if (status.status === "completed") {
+          setVoteStatus("done");
+          return;
+        }
+        if (status.status === "failed") {
+          setVoteStatus("error");
+          setVoteError(status.error || "登録に失敗しました");
+          return;
+        }
+      }
+      // タイムアウト
+      setVoteStatus("error");
+      setVoteError("登録がタイムアウトしました");
+    } catch (err) {
+      console.error("[YellowPanel] 投票エラー:", err);
+      setVoteStatus("error");
+      setVoteError(err instanceof Error ? err.message : "エラーが発生しました");
+    }
+  }, [item.object_id, item.box, imageKey]);
 
   return (
     <div className="fixed bottom-14 left-0 right-0 max-h-[50dvh] overflow-y-auto z-[90] bg-neutral-900/95 backdrop-blur-md border-t-[3px] border-yellow-500 p-4 rounded-t-xl animate-slide-up">
@@ -285,7 +337,7 @@ function YellowPanel({
         <div className="flex gap-4 mt-2">
           <button
             className="flex-1 py-2.5 bg-green-500 text-black rounded-lg text-sm font-semibold"
-            onClick={() => setConfirmed(true)}
+            onClick={handleVoteYes}
           >
             はい
           </button>
@@ -298,9 +350,26 @@ function YellowPanel({
         </div>
       )}
 
-      {confirmed === true && (
-        <p className="text-sm text-white/70 mt-2">
-          ありがとうございます。正解として記録しました。
+      {confirmed === true && voteStatus === "registering" && (
+        <div className="flex items-center gap-2 mt-2">
+          <div className="w-4 h-4 border-2 border-white/20 border-t-yellow-500 rounded-full animate-spin" />
+          <p className="text-sm text-white/70">ベクトル登録中...</p>
+        </div>
+      )}
+      {confirmed === true && voteStatus === "polling" && (
+        <div className="flex items-center gap-2 mt-2">
+          <div className="w-4 h-4 border-2 border-white/20 border-t-yellow-500 rounded-full animate-spin" />
+          <p className="text-sm text-white/70">処理中...</p>
+        </div>
+      )}
+      {confirmed === true && voteStatus === "done" && (
+        <p className="text-sm text-green-400 mt-2">
+          ✓ 正解として登録しました。次回から精度が向上します。
+        </p>
+      )}
+      {confirmed === true && voteStatus === "error" && (
+        <p className="text-sm text-red-400 mt-2">
+          登録に失敗しました: {voteError}
         </p>
       )}
       {confirmed === false && (
