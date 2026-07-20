@@ -45,6 +45,7 @@ export default function RegisterFlow() {
   const [selectedBox, setSelectedBox] = useState<number[] | null>(null);
   const [jobId, setJobId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [infoError, setInfoError] = useState<string | null>(null);
 
   // ─── Step 1: キャプチャ開始 ─────────────────────────────────
   const handleStartCapture = useCallback(() => {
@@ -157,6 +158,7 @@ export default function RegisterFlow() {
     async (infoText: string) => {
       console.log("[register-flow] 情報入力確定:", infoText);
       console.log("[register-flow] 登録リクエスト送信中... (全 %d 枚)", uploadedKeys.length);
+      setInfoError(null);
       setState("registering");
 
       try {
@@ -168,8 +170,14 @@ export default function RegisterFlow() {
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         console.error("[register-flow] 登録エラー:", msg);
-        setError(msg);
-        setState("error");
+        // コメントガードレールNG → 情報入力に戻す
+        if (msg.includes("不適切")) {
+          setInfoError("不適切な表現が含まれています。内容を修正してください。");
+          setState("info-input");
+        } else {
+          setError(msg);
+          setState("error");
+        }
       }
     },
     [uploadedKeys, representativeIdx, selectedBox]
@@ -183,7 +191,20 @@ export default function RegisterFlow() {
 
   const handleJobError = useCallback((msg: string) => {
     console.error("[register-flow] ジョブ失敗:", msg);
-    setError(msg);
+    // Rekognition ガードレール失敗時はユーザーフレンドリーなメッセージに変換
+    if (msg.includes("Guardrail rejected")) {
+      if (msg.includes("face")) {
+        setError("この画像は登録できません（人物の顔が含まれています）");
+      } else if (msg.includes("person") || msg.includes("Person")) {
+        setError("この画像は登録できません（人物が含まれています）");
+      } else if (msg.includes("moderation")) {
+        setError("この画像は登録できません（不適切なコンテンツが含まれています）");
+      } else {
+        setError("この画像は登録できません（ガードレールに該当しました）");
+      }
+    } else {
+      setError(msg);
+    }
     setState("error");
   }, []);
 
@@ -285,7 +306,7 @@ export default function RegisterFlow() {
 
       {/* ─── 物体情報入力 ─── */}
       {state === "info-input" && representativeUrl && (
-        <InfoInput imageUrl={representativeUrl} onConfirm={handleInfoConfirm} />
+        <InfoInput imageUrl={representativeUrl} onConfirm={handleInfoConfirm} errorMessage={infoError} />
       )}
 
       {/* ─── 登録リクエスト送信中 ─── */}

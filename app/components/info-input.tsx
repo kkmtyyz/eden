@@ -5,13 +5,14 @@ import { useState } from "react";
 interface InfoInputProps {
   imageUrl: string;
   onConfirm: (text: string) => void;
+  errorMessage?: string | null;
 }
 
 /**
  * 登録時の初期物体情報入力コンポーネント。
  * BBox選択後に表示し、物体の名前や説明を入力させる。
  */
-export default function InfoInput({ imageUrl, onConfirm }: InfoInputProps) {
+export default function InfoInput({ imageUrl, onConfirm, errorMessage }: InfoInputProps) {
   const [text, setText] = useState("");
 
   console.log("[info-input] 表示");
@@ -43,6 +44,11 @@ export default function InfoInput({ imageUrl, onConfirm }: InfoInputProps) {
         <p className="mt-2 text-xs text-white/40">
           検索でヒットしたときに表示される情報です。後から追加もできます。
         </p>
+        {errorMessage && (
+          <p className="mt-2 text-xs text-red-400">
+            {errorMessage}
+          </p>
+        )}
       </div>
 
       {/* 確定ボタン */}

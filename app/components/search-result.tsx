@@ -106,6 +106,7 @@ function GreenPanel({
   const [infoText, setInfoText] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [infoList, setInfoList] = useState(item.object_info?.info || []);
+  const [infoError, setInfoError] = useState<string | null>(null);
   const [thumbnailUrl, setThumbnailUrl] = useState<string | null>(null);
   const [thumbnailLoading, setThumbnailLoading] = useState(false);
 
@@ -130,6 +131,7 @@ function GreenPanel({
   const handleAddInfo = useCallback(async () => {
     if (!infoText.trim() || !item.object_id) return;
     setSubmitting(true);
+    setInfoError(null);
     try {
       await addObjectInfo(item.object_id, infoText.trim());
       setInfoList((prev) => [
@@ -137,8 +139,13 @@ function GreenPanel({
         { text: infoText.trim(), user_id: "me", created_at: new Date().toISOString() },
       ]);
       setInfoText("");
-    } catch {
-      // TODO: トースト通知
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("不適切")) {
+        setInfoError("不適切な表現が含まれています。内容を修正してください。");
+      } else {
+        setInfoError("送信に失敗しました。もう一度お試しください。");
+      }
     } finally {
       setSubmitting(false);
     }
@@ -212,6 +219,9 @@ function GreenPanel({
           {submitting ? "..." : "追加"}
         </button>
       </div>
+      {infoError && (
+        <p className="mt-2 text-xs text-red-400">{infoError}</p>
+      )}
     </div>
   );
 }
