@@ -92,7 +92,7 @@ export class ApiStack extends Construct {
     // ─── Bedrock Guardrails (テキストガードレール) ──────────────────
     const textGuardrail = new bedrock.CfnGuardrail(this, "TextGuardrail", {
       name: "eden-text-guardrail",
-      description: "Eden コメント入力に対するコンテンツフィルター (Standard Tier, 日本語対応)",
+      description: "Eden コメント入力に対するコンテンツフィルター",
       blockedInputMessaging: "このコメントは不適切な内容を含むため投稿できません。",
       blockedOutputsMessaging: "不適切な内容が検出されました。",
       contentPolicyConfig: {
@@ -104,12 +104,10 @@ export class ApiStack extends Construct {
           { type: "MISCONDUCT", inputStrength: "MEDIUM", outputStrength: "MEDIUM" },
         ],
       },
-      // Standard Tier: 日本語を含む60以上の言語に対応
-      contentFiltersTierConfig: {
-        tier: "STANDARD",
-      },
-      // クロスリージョン推論: Standard Tier に必須。デフォルトプロファイルを使用
-      crossRegionConfig: {},
+      // TODO: Standard Tier (日本語対応) に切り替えるには以下を追加:
+      // 1. aws bedrock list-guardrail-profiles --region ap-northeast-1 でプロファイルARNを取得
+      // 2. crossRegionConfig: { guardrailProfileArn: "arn:aws:bedrock:..." }
+      // 3. contentFiltersTierConfig: { tier: "STANDARD" }
     });
 
     // ─── Lambda Layer (eden パッケージ) ───────────────────────────
