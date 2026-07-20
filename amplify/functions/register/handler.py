@@ -8,6 +8,8 @@ from datetime import datetime, timezone
 
 import boto3
 
+from eden.text_guardrail import check_text_guardrail
+
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
@@ -48,6 +50,14 @@ def handler(event, context):
     if not box:
         logger.warning("[register] box が未指定")
         return _error(400, "box is required")
+
+    # テキストガードレール: initial_info をチェック
+    if initial_info:
+        guard = check_text_guardrail(initial_info)
+        if not guard.passed:
+            logger.warning("[register] テキストガードレール NG: reason=%s, policy=%s",
+                          guard.reason, guard.policy)
+            return _error(400, f"コメントが不適切と判定されました: {guard.reason}")
 
     # ジョブID生成
     job_id = str(uuid.uuid4())

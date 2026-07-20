@@ -33,7 +33,13 @@ CROP_PAD: float = float(os.getenv("EDEN_CROP_PAD", "0.06"))
 ROTATIONS: list[int] = [0, 90, 180, 270]
 TOP_K: int = int(os.getenv("EDEN_TOP_K", "20"))
 
-# ─── ガードレール ─────────────────────────────────────────────
+# ─── ガードレール (Rekognition) ───────────────────────────────
 GUARDRAIL_MODERATION_MIN_CONFIDENCE: float = float(
     os.getenv("EDEN_GUARDRAIL_MODERATION_MIN_CONFIDENCE", "70.0")
 )
+
+# ─── テキストガードレール (Bedrock Guardrails) ─────────────────
+# Standard Tier 使用 (日本語対応にはクロスリージョン推論の有効化が必要)
+TEXT_GUARDRAIL_ID: str = os.getenv("EDEN_TEXT_GUARDRAIL_ID", "")
+TEXT_GUARDRAIL_VERSION: str = os.getenv("EDEN_TEXT_GUARDRAIL_VERSION", "1")
+TEXT_GUARDRAIL_REGION: str = os.getenv("EDEN_TEXT_GUARDRAIL_REGION", "ap-northeast-1")

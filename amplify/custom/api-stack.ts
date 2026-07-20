@@ -146,6 +146,9 @@ export class ApiStack extends Construct {
         REGISTER_QUEUE_URL: registerQueue.queueUrl,
         EDEN_VECTOR_BUCKET: vectorBucketName,
         EDEN_VECTOR_INDEX: "eden-index",
+        EDEN_TEXT_GUARDRAIL_ID: process.env.EDEN_TEXT_GUARDRAIL_ID || "",
+        EDEN_TEXT_GUARDRAIL_VERSION: process.env.EDEN_TEXT_GUARDRAIL_VERSION || "1",
+        EDEN_TEXT_GUARDRAIL_REGION: process.env.EDEN_TEXT_GUARDRAIL_REGION || "ap-northeast-1",
       },
     };
 
@@ -263,6 +266,14 @@ export class ApiStack extends Construct {
       resources: ["*"],
     });
     registerWorkerFn.addToRolePolicy(rekognitionPolicy);
+
+    // Bedrock Guardrails (テキストガードレール)
+    const bedrockGuardrailPolicy = new iam.PolicyStatement({
+      actions: ["bedrock:ApplyGuardrail"],
+      resources: ["*"],
+    });
+    registerFn.addToRolePolicy(bedrockGuardrailPolicy);
+    addInfoFn.addToRolePolicy(bedrockGuardrailPolicy);
 
     // S3 Vectors
     const s3VectorsPolicy = new iam.PolicyStatement({

@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 
 import boto3
 
+from eden.text_guardrail import check_text_guardrail
+
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
@@ -26,6 +28,13 @@ def handler(event, context):
     if not text:
         logger.warning("[add-info] text が空")
         return _error(400, "text is required")
+
+    # テキストガードレール: コメントをチェック
+    guard = check_text_guardrail(text)
+    if not guard.passed:
+        logger.warning("[add-info] テキストガードレール NG: object_id=%s, reason=%s, policy=%s",
+                      object_id, guard.reason, guard.policy)
+        return _error(400, f"コメントが不適切と判定されました: {guard.reason}")
 
     # Cognito authorizer から user_id を取得
     claims = event.get("requestContext", {}).get("authorizer", {}).get("claims", {})
