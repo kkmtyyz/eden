@@ -7,7 +7,7 @@
  */
 
 const CAPTURE_INTERVAL_MS = 100;
-const MAX_FRAMES = 20;
+const MAX_FRAMES = 50;
 const SIMILARITY_THRESHOLD = 0.97; // これ以上類似していたら除外
 const BLUR_THRESHOLD = 50; // Laplacian variance がこれ以下ならブレと判定
 

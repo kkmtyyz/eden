@@ -1,7 +1,10 @@
 """SQS trigger: 登録処理の非同期ワーカー。
 
-マルチフレーム対応:
-代表フレームでガードレール＆BBox確定 → 全フレームでクロップ→文字抽出→4方向埋め込み→登録。
+マルチフレーム対応 (並列化版):
+Phase 1: BBox追跡を4並列で実行 (50枚 → 追跡成功フレームを特定)
+Phase 2: 追跡成功フレームからベスト20枚を選定 (センタリング + 多様性)
+Phase 3: OCR + 4方向埋め込みを4並列で実行
+Phase 4: S3 Vectors に一括登録 + DynamoDB 更新
 """
 
 import json
@@ -9,6 +12,7 @@ import logging
 import os
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 
 import boto3
@@ -42,6 +46,10 @@ s3v_client = boto3.client("s3vectors", region_name=config.VECTOR_REGION)
 
 # BBox追跡時のIoU閾値
 IOU_THRESHOLD = 0.3
+# 並列ワーカー数
+NUM_WORKERS = 4
+# バックエンドで選定するフレーム数上限
+MAX_SELECTED_FRAMES = 20
 
 
 def handler(event, context):
@@ -97,30 +105,55 @@ def _process(msg: dict):
     if not guard_result.passed:
         raise ValueError(f"Guardrail rejected: {guard_result.reason} - {guard_result.details}")
 
-    # ─── 全フレーム処理 ────────────────────────────────────────
-    all_vectors = []
+    # ─── Phase 1: BBox追跡を4並列で実行 ───────────────────────
+    logger.info("[register-worker] === Phase 1: BBox追跡 (%d枚, %d並列) ===", len(keys), NUM_WORKERS)
+    t_phase1 = time.time()
+
+    # 代表フレームは追跡不要（boxそのまま使う）
+    other_keys = [k for k in keys if k != representative_key]
+
+    def _track_one(key: str):
+        """1フレームのBBox追跡。(key, img, tracked_box) or (key, None, None) を返す。"""
+        try:
+            img = _load_image(key)
+            tracked_box = _track_bbox(img, box)
+            return (key, img, tracked_box)
+        except Exception as e:
+            logger.warning("[register-worker] フレーム %s: 読み込み/追跡エラー: %s", key, e)
+            return (key, None, None)
+
+    tracked_frames = []
+    with ThreadPoolExecutor(max_workers=NUM_WORKERS) as pool:
+        results = list(pool.map(_track_one, other_keys))
+
+    # 代表フレームを先頭に追加
+    tracked_frames.append((representative_key, rep_img, box))
+    for key, img, tracked_box in results:
+        if img is not None and tracked_box is not None:
+            tracked_frames.append((key, img, tracked_box))
+
+    logger.info("[register-worker] Phase 1 完了: %d/%d 枚追跡成功, %.1f秒",
+                len(tracked_frames), len(keys), time.time() - t_phase1)
+
+    # ─── Phase 2: フレーム選定 (20枚) ─────────────────────────
+    logger.info("[register-worker] === Phase 2: フレーム選定 ===")
+    selected_frames = _select_best_frames(tracked_frames, representative_key, MAX_SELECTED_FRAMES)
+    logger.info("[register-worker] Phase 2 完了: %d 枚選定", len(selected_frames))
+
+    # ─── Phase 3: OCR + 埋め込みを4並列で実行 ─────────────────
+    logger.info("[register-worker] === Phase 3: OCR + 埋め込み (%d枚, %d並列) ===",
+                len(selected_frames), NUM_WORKERS)
+    t_phase3 = time.time()
+
     thumbnail_key = None
 
-    for i, key in enumerate(keys):
-        logger.info("[register-worker] フレーム %d/%d 処理開始: %s", i + 1, len(keys), key)
+    def _embed_one(frame_tuple):
+        """1フレームのクロップ→OCR→埋め込み。ベクトルリストを返す。"""
+        key, img, frame_box = frame_tuple
         t_frame = time.time()
-
-        # 画像取得
-        if key == representative_key:
-            img = rep_img
-            frame_box = box
-        else:
-            img = _load_image(key)
-            # BBox追跡: 代表フレームで選択したBBoxと同じ物体を探す
-            frame_box = _track_bbox(img, box)
-            if frame_box is None:
-                logger.info("[register-worker] フレーム %d: 物体追跡失敗 → スキップ", i + 1)
-                continue
 
         # クロップ
         crop_img = crop_bbox(img, frame_box)
-        logger.info("[register-worker] フレーム %d: クロップ完了, box=%s, crop_size=%s",
-                    i + 1, frame_box, crop_img.size)
 
         # S3保存（再埋め込み原本）
         crop_key = f"crops/{object_id}/{key.rsplit('/', 1)[-1]}"
@@ -132,32 +165,27 @@ def _process(msg: dict):
         )
 
         # サムネイル（代表画像のみ）
+        thumb_key = None
         if key == representative_key:
             thumb = crop_img.copy()
             thumb.thumbnail((256, 256))
-            thumbnail_key = f"thumbnails/{object_id}.jpg"
+            thumb_key = f"thumbnails/{object_id}.jpg"
             s3_client.put_object(
                 Bucket=IMAGE_BUCKET,
-                Key=thumbnail_key,
+                Key=thumb_key,
                 Body=jpeg_bytes(thumb, quality=75),
                 ContentType="image/jpeg",
             )
-            logger.info("[register-worker] サムネイル保存: %s", thumbnail_key)
 
         # 文字抽出
-        t_ocr = time.time()
         raw_text = extract_text(crop_img, client=text_client)
         tokens = normalize_text(raw_text)
-        logger.info("[register-worker] フレーム %d: OCR='%s', tokens=%s, %.1fms",
-                    i + 1, raw_text[:30] if raw_text else "", tokens, (time.time() - t_ocr) * 1000)
 
         # 4方向埋め込み
-        t_embed = time.time()
         rotations = embed_rotations(crop_img, client=embed_client)
-        logger.info("[register-worker] フレーム %d: 埋め込み完了, %d方向, %.1fms",
-                    i + 1, len(rotations), (time.time() - t_embed) * 1000)
 
         # ベクトル構築
+        vectors = []
         for deg, vec in rotations:
             metadata = {
                 "object_id": object_id,
@@ -169,21 +197,37 @@ def _process(msg: dict):
                 metadata["text_tokens"] = tokens
 
             vec_key = f"{object_id}__{key.rsplit('/', 1)[-1].rsplit('.', 1)[0]}__{deg}"
-            all_vectors.append({
+            vectors.append({
                 "key": vec_key,
                 "data": {"float32": vec.tolist()},
                 "metadata": metadata,
             })
 
-        logger.info("[register-worker] フレーム %d/%d 完了: %.1fms",
-                    i + 1, len(keys), (time.time() - t_frame) * 1000)
+        elapsed = (time.time() - t_frame) * 1000
+        logger.info("[register-worker] フレーム %s: OCR='%s', %d方向, %.1fms",
+                    key.rsplit('/', 1)[-1], (raw_text or "")[:20], len(rotations), elapsed)
 
-    # ─── S3 Vectors に一括登録 ─────────────────────────────────
+        return vectors, thumb_key
+
+    with ThreadPoolExecutor(max_workers=NUM_WORKERS) as pool:
+        embed_results = list(pool.map(_embed_one, selected_frames))
+
+    # 結果集約
+    all_vectors = []
+    for vectors, thumb_key in embed_results:
+        all_vectors.extend(vectors)
+        if thumb_key:
+            thumbnail_key = thumb_key
+
+    logger.info("[register-worker] Phase 3 完了: %d ベクトル生成, %.1f秒",
+                len(all_vectors), time.time() - t_phase3)
+
+    # ─── Phase 4: S3 Vectors に一括登録 ───────────────────────
     if not all_vectors:
         raise ValueError("有効なフレームがありませんでした")
 
+    logger.info("[register-worker] === Phase 4: S3 Vectors 登録 + DynamoDB ===")
     t_vec = time.time()
-    # S3 Vectors は 1回 の put_vectors で最大100ベクトル
     BATCH_SIZE = 100
     for batch_start in range(0, len(all_vectors), BATCH_SIZE):
         batch = all_vectors[batch_start:batch_start + BATCH_SIZE]
@@ -199,11 +243,8 @@ def _process(msg: dict):
                 len(all_vectors), (time.time() - t_vec) * 1000)
 
     # ─── DynamoDB 物体テーブル登録 ─────────────────────────────
-    # 初期情報があれば info リストに入れる
     initial_info_list = []
     if initial_info:
-        # Cognito user_id は SQS 経由では取れないので "system" とする
-        # (register Lambda で event から取得して渡すことも可能だが、簡易実装)
         from datetime import datetime, timezone
         now = datetime.now(timezone.utc).isoformat()
         initial_info_list = [{"text": initial_info, "user_id": "registrant", "created_at": now}]
@@ -221,7 +262,6 @@ def _process(msg: dict):
                     object_id, len(initial_info_list))
     except ClientError as e:
         if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
-            # 既存レコード → サムネ更新 + 情報追記
             update_expr = "SET thumbnail_key = :tk"
             attr_values: dict = {":tk": thumbnail_key}
             if initial_info_list:
@@ -247,6 +287,106 @@ def _process(msg: dict):
                 msg["job_id"], object_id)
 
 
+# ─── フレーム選定ロジック ──────────────────────────────────────
+
+
+def _select_best_frames(
+    tracked_frames: list[tuple],
+    representative_key: str,
+    max_count: int,
+) -> list[tuple]:
+    """追跡成功フレームから最良の max_count 枚を選定する。
+
+    選定基準:
+    1. 代表フレームは必ず含める
+    2. センタリングスコア: クロップ後に物体がBBox中心に近いほど高い
+    3. 多様性: 既に選定したフレームと類似度が高すぎるものは後回し
+
+    Args:
+        tracked_frames: [(key, img, box), ...] 追跡成功フレーム一覧
+        representative_key: 代表フレームのキー (必ず選定に含める)
+        max_count: 選定する最大枚数
+
+    Returns:
+        選定されたフレームのリスト [(key, img, box), ...]
+    """
+    if len(tracked_frames) <= max_count:
+        return tracked_frames
+
+    # スコア計算: 物体のBBoxが画像中心に近いほど良い
+    scored = []
+    for key, img, frame_box in tracked_frames:
+        score = _center_score(frame_box)
+        scored.append((score, key, img, frame_box))
+
+    # 代表フレームを先に確保
+    selected = []
+    remaining = []
+    for score, key, img, frame_box in scored:
+        if key == representative_key:
+            selected.append((key, img, frame_box))
+        else:
+            remaining.append((score, key, img, frame_box))
+
+    # スコア降順でソート
+    remaining.sort(key=lambda x: x[0], reverse=True)
+
+    # 貪欲法: スコアが高い順に、既選定と十分異なるものを追加
+    for score, key, img, frame_box in remaining:
+        if len(selected) >= max_count:
+            break
+
+        # 多様性チェック: 既選定フレームとBBoxの位置が近すぎないか
+        if _is_diverse_enough(frame_box, [f[2] for f in selected]):
+            selected.append((key, img, frame_box))
+
+    # 多様性で弾かれて max_count に満たない場合はスコア順で埋める
+    if len(selected) < max_count:
+        selected_keys = {f[0] for f in selected}
+        for score, key, img, frame_box in remaining:
+            if len(selected) >= max_count:
+                break
+            if key not in selected_keys:
+                selected.append((key, img, frame_box))
+
+    return selected
+
+
+def _center_score(box: list[int]) -> float:
+    """BBoxの中心が画像中心 (500, 500) にどれだけ近いかのスコア (0〜1, 高いほど良い)。"""
+    x1, y1, x2, y2 = box
+    cx = (x1 + x2) / 2
+    cy = (y1 + y2) / 2
+    # 中心からの距離 (最大 ~707)
+    dist = ((cx - 500) ** 2 + (cy - 500) ** 2) ** 0.5
+    max_dist = 707.0
+    return 1.0 - (dist / max_dist)
+
+
+def _is_diverse_enough(
+    candidate_box: list[int],
+    existing_boxes: list[list[int]],
+    min_diff: float = 0.05,
+) -> bool:
+    """候補BBoxが既選定のBBoxと十分に異なるかチェック。
+
+    BBox中心の差が min_diff (正規化) 以上ならOK。
+    """
+    cx = ((candidate_box[0] + candidate_box[2]) / 2) / 1000
+    cy = ((candidate_box[1] + candidate_box[3]) / 2) / 1000
+
+    for ebox in existing_boxes:
+        ex = ((ebox[0] + ebox[2]) / 2) / 1000
+        ey = ((ebox[1] + ebox[3]) / 2) / 1000
+        diff = ((cx - ex) ** 2 + (cy - ey) ** 2) ** 0.5
+        if diff < min_diff:
+            return False
+    return True
+
+
+# ─── ユーティリティ ────────────────────────────────────────────
+
+
 def _load_image(key: str) -> Image.Image:
     """S3から画像を取得してリサイズ済みで返す。"""
     obj = s3_client.get_object(Bucket=IMAGE_BUCKET, Key=key)
@@ -261,9 +401,7 @@ def _track_bbox(img: Image.Image, reference_box: list[int]) -> list[int] | None:
 
     BBox検出 → reference_box との IoU が最大かつ閾値以上のものを返す。
     """
-    t0 = time.time()
     boxes = detect_boxes(img, client=bedrock_client)
-    logger.info("[register-worker] BBox追跡: 検出=%d個, %.1fms", len(boxes), (time.time() - t0) * 1000)
 
     if not boxes:
         return None
@@ -278,10 +416,8 @@ def _track_bbox(img: Image.Image, reference_box: list[int]) -> list[int] | None:
             best_box = b
 
     if best_iou < IOU_THRESHOLD:
-        logger.info("[register-worker] BBox追跡: IoU=%.3f < 閾値%.2f → 追跡失敗", best_iou, IOU_THRESHOLD)
         return None
 
-    logger.info("[register-worker] BBox追跡成功: IoU=%.3f, box=%s", best_iou, best_box)
     return best_box
 
 

@@ -11,7 +11,7 @@
 3. 「撮影完了」ボタン → プルーニング処理:
    - **ブレ検出** (Laplacian variance < 50 のフレームを除外)
    - **類似フレーム除去** (NCC 正規化相関 > 0.97 を除外)
-   - **等間隔サンプリング** (上限20枚)
+   - **等間隔サンプリング** (上限50枚) ← バックエンドで20枚に絞る
 4. プルーニング後のフレーム一覧表示 → ユーザーが**代表画像(サムネ用)を1枚選択**
 5. 全フレームを presigned PUT で S3 に直アップロード (3並列)
 6. 代表画像で POST /bbox-candidates → BBox 自動選択 (default_index)
@@ -19,25 +19,39 @@
 8. POST /register (keys[], representative_key, box, initial_info) → job_id 取得
 9. GET /jobs/{id} を3秒ポーリング → 完了表示
 
-### バックエンド (register_worker, SQS trigger)
+### バックエンド (register_worker, SQS trigger) — 4並列処理
 10. 代表フレームのクロップでガードレール (Rekognition):
     - detect_faces / detect_labels(Person) / detect_moderation_labels → 該当なら登録拒否
-11. 全フレームに対してループ:
-    - BBox追跡 (IoU >= 0.3 で同一物体判定、失敗フレームはスキップ)
+11. **Phase 1: BBox追跡 (4並列, ThreadPoolExecutor)**
+    - 全フレーム (最大50枚) に対してBBox検出 → IoU >= 0.3 で同一物体判定
+    - 追跡失敗フレームを除外
+12. **Phase 2: フレーム選定 (20枚)**
+    - センタリングスコア: BBox中心が画像中心に近いほど高スコア
+    - 多様性: BBox位置が近すぎるフレームを間引き
+    - 代表フレームは必ず含む
+13. **Phase 3: OCR + 埋め込み (4並列, ThreadPoolExecutor)**
     - BBoxクロップ (EXIF transpose済み、余白6%)
     - クロップ画像を S3 に保存 (再埋め込み原本)
     - 代表フレームのクロップをサムネイル (256x256) として保存
     - VLM(Nova Lite)でクロップ後画像から文字抽出 → NFKC正規化・小文字化・トークン化
     - **CLAHE光正規化** → 4方向回転 → Titan Multimodal Embeddings で1024次元ベクトル化
-12. S3 Vectors に一括登録 (100件バッチ):
-    - filterable: object_id, text_tokens (空なしならキー省略)
-    - non-filterable: label, source_file, rotation
-13. DynamoDB に物体レコード (object_id, thumbnail_key, info[initial_info])
-14. ジョブステータス更新 → completed
+14. **Phase 4: 登録**
+    - S3 Vectors に一括登録 (100件バッチ):
+      - filterable: object_id, text_tokens (空なしならキー省略)
+      - non-filterable: label, source_file, rotation
+    - DynamoDB に物体レコード (object_id, thumbnail_key, info[initial_info])
+    - ジョブステータス更新 → completed
 
 ### ベクトル数の目安
 - 20フレーム × 4方向回転 = 最大80ベクトル/物体
-- 追跡失敗フレームはスキップされるため実際は60〜80程度
+- 50枚アップロード → バックエンドで20枚選定 → 追跡失敗を除外済みなので実際は60〜80程度
+
+### 処理時間の目安
+- Phase 1 (BBox追跡 50枚 × 4並列): ~20秒
+- Phase 2 (フレーム選定): ~0秒 (CPU計算のみ)
+- Phase 3 (OCR+埋め込み 20枚 × 4並列): ~25秒
+- Phase 4 (S3 Vectors登録): ~3秒
+- 合計: ~50秒 (並列化前: ~90秒)
 
 ## 物体検索フロー
 
@@ -146,4 +160,4 @@ eden/
 - 4分割ベクトル化 (見切れ対応)
 - BBox選択のUI復活 (複数候補から選ばせる)
 - Nova Pro への切り替え (コスト13倍のため保留)
-- 登録時の20枚選定で物体がセンター(画像中心)にある画像を優先的にピックアップする
+- フレーム選定にブレスコア (Laplacian variance) も加味する (現在はセンタリング+多様性のみ)
