@@ -300,9 +300,15 @@ export class ApiStack extends Construct {
     registerWorkerFn.addToRolePolicy(rekognitionPolicy);
 
     // Bedrock Guardrails (テキストガードレール)
+    // クロスリージョン推論ではガードレール本体 + ルーティング先プロファイルの両方が必要
     const bedrockGuardrailPolicy = new iam.PolicyStatement({
       actions: ["bedrock:ApplyGuardrail"],
-      resources: [textGuardrail.attrGuardrailArn],
+      resources: [
+        textGuardrail.attrGuardrailArn,
+        guardrailProfileArn,
+        // ルーティング先リージョンのプロファイルにもアクセスが必要
+        `arn:aws:bedrock:*:${cdk.Aws.ACCOUNT_ID}:guardrail-profile/apac.guardrail.v1:0`,
+      ],
     });
     registerFn.addToRolePolicy(bedrockGuardrailPolicy);
     addInfoFn.addToRolePolicy(bedrockGuardrailPolicy);
