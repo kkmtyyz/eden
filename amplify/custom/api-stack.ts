@@ -90,24 +90,34 @@ export class ApiStack extends Construct {
     vectorIndex.addDependency(vectorBucket);
 
     // ─── Bedrock Guardrails (テキストガードレール) ──────────────────
+    // ガードレールプロファイルARNを組み立て (APACリージョン用)
+    const guardrailProfileArn = cdk.Stack.of(this).formatArn({
+      service: "bedrock",
+      resource: "guardrail-profile",
+      resourceName: "apac.guardrail.v1:0",
+      arnFormat: cdk.ArnFormat.SLASH_RESOURCE_NAME,
+    });
+
     const textGuardrail = new bedrock.CfnGuardrail(this, "TextGuardrail", {
       name: "eden-text-guardrail",
-      description: "Eden コメント入力に対するコンテンツフィルター",
+      description: "Eden コメント入力に対するコンテンツフィルター (Standard Tier, 日本語対応)",
       blockedInputMessaging: "このコメントは不適切な内容を含むため投稿できません。",
       blockedOutputsMessaging: "不適切な内容が検出されました。",
+      crossRegionConfig: {
+        guardrailProfileArn,
+      },
       contentPolicyConfig: {
         filtersConfig: [
-          { type: "HATE", inputStrength: "MEDIUM", outputStrength: "MEDIUM" },
-          { type: "INSULTS", inputStrength: "MEDIUM", outputStrength: "MEDIUM" },
-          { type: "SEXUAL", inputStrength: "HIGH", outputStrength: "HIGH" },
-          { type: "VIOLENCE", inputStrength: "MEDIUM", outputStrength: "MEDIUM" },
-          { type: "MISCONDUCT", inputStrength: "MEDIUM", outputStrength: "MEDIUM" },
+          { type: "HATE", inputStrength: "MEDIUM", outputStrength: "NONE" },
+          { type: "INSULTS", inputStrength: "MEDIUM", outputStrength: "NONE" },
+          { type: "SEXUAL", inputStrength: "HIGH", outputStrength: "NONE" },
+          { type: "VIOLENCE", inputStrength: "MEDIUM", outputStrength: "NONE" },
+          { type: "MISCONDUCT", inputStrength: "MEDIUM", outputStrength: "NONE" },
         ],
+        contentFiltersTierConfig: {
+          tierName: "STANDARD",
+        },
       },
-      // TODO: Standard Tier (日本語対応) に切り替えるには以下を追加:
-      // 1. aws bedrock list-guardrail-profiles --region ap-northeast-1 でプロファイルARNを取得
-      // 2. crossRegionConfig: { guardrailProfileArn: "arn:aws:bedrock:..." }
-      // 3. contentFiltersTierConfig: { tier: "STANDARD" }
     });
 
     // ─── Lambda Layer (eden パッケージ) ───────────────────────────
