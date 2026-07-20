@@ -1,59 +1,148 @@
 <!-- このファイルはKiroのsteering用ドキュメントです。開発時に参照してください。 -->
+<!-- 最終更新: 2026-07-19 (kiro/dev ブランチの実装に基づく) -->
 
 # 機能別整理
+
 ## 物体登録フロー
-### クライアント(スマホWebアプリ)
-1. 登録画面 → カメラ起動、「物体を画面中央に収めてください」ガイド枠表示
-2. 物体の周り・上をゆっくり動かしてもらい、約100msごとにフレームキャプチャ
-3. 登録ボタン → 類似フレームをプルーニング(上限10枚程度)
-4. presigned URLでS3に直PUT → バックエンドに登録リクエスト
-### バックエンド
-5. 代表フレームにNovaでBBox検出 → 候補提示、ユーザーがタップで対象選択(デフォルト候補は中央×面積スコアで自動ハイライト)
-6. ガードレール(選択BBox+代表フレーム全体、重い処理の前):
-  - detect_faces / detect_labels(Person) / detect_moderation_labels → 該当なら登録拒否
-7. 残りフレームは選択BBoxとのIoU・類似度で同一物体を追跡
-8. 各フレームからBBoxクロップ(EXIF transpose済み、余白12%)
-  - 全クロップをS3に保存(モデル乗り換え時の再埋め込み用の原本資産)
-  - 代表クロップ1枚を thumbnail_key としてDynamoDBに紐づけ
-9. VLM(Nova)でクロップ後画像から文字抽出 → NFKC正規化・小文字化・トークン化
-10. 各クロップを4方向回転 → Titan Multimodal Embeddings(us-east-1、東京未対応)で1024次元ベクトル化
-11. S3 Vectors(東京、cosine)に登録:
-  - filterable: object_id、text_tokens(空配列は不可、文字なしならキー自体を省略)
-  - non-filterable: label、source_file 等
-12. DynamoDBに物体レコード(PK=object_id, thumbnail_key, info追記リスト)
+
+### クライアント (スマホWebアプリ)
+1. 登録画面 → カメラ起動、「物体の周りをゆっくり動かしてください」ガイド枠表示
+2. 「撮影開始」ボタン → 約100msごとにフレームキャプチャ (表示範囲=キャプチャ範囲)
+3. 「撮影完了」ボタン → プルーニング処理:
+   - **ブレ検出** (Laplacian variance < 50 のフレームを除外)
+   - **類似フレーム除去** (NCC 正規化相関 > 0.97 を除外)
+   - **等間隔サンプリング** (上限20枚)
+4. プルーニング後のフレーム一覧表示 → ユーザーが**代表画像(サムネ用)を1枚選択**
+5. 全フレームを presigned PUT で S3 に直アップロード (3並列)
+6. 代表画像で POST /bbox-candidates → BBox 自動選択 (default_index)
+7. **物体情報入力** (名前・説明テキスト) — 検索ヒット時に表示される初期情報
+8. POST /register (keys[], representative_key, box, initial_info) → job_id 取得
+9. GET /jobs/{id} を3秒ポーリング → 完了表示
+
+### バックエンド (register_worker, SQS trigger)
+10. 代表フレームのクロップでガードレール (Rekognition):
+    - detect_faces / detect_labels(Person) / detect_moderation_labels → 該当なら登録拒否
+11. 全フレームに対してループ:
+    - BBox追跡 (IoU >= 0.3 で同一物体判定、失敗フレームはスキップ)
+    - BBoxクロップ (EXIF transpose済み、余白6%)
+    - クロップ画像を S3 に保存 (再埋め込み原本)
+    - 代表フレームのクロップをサムネイル (256x256) として保存
+    - VLM(Nova Lite)でクロップ後画像から文字抽出 → NFKC正規化・小文字化・トークン化
+    - **CLAHE光正規化** → 4方向回転 → Titan Multimodal Embeddings で1024次元ベクトル化
+12. S3 Vectors に一括登録 (100件バッチ):
+    - filterable: object_id, text_tokens (空なしならキー省略)
+    - non-filterable: label, source_file, rotation
+13. DynamoDB に物体レコード (object_id, thumbnail_key, info[initial_info])
+14. ジョブステータス更新 → completed
+
+### ベクトル数の目安
+- 20フレーム × 4方向回転 = 最大80ベクトル/物体
+- 追跡失敗フレームはスキップされるため実際は60〜80程度
 
 ## 物体検索フロー
-### バックエンド
-1. クエリ画像をEXIF transpose → NovaでBBox検出 → 極小除外、面積上位5個
-2. BBoxごとに並列処理:
-  - 登録時と同じ中央クロップ関数でクロップ(登録と検索の画像条件を揃えるのが精度の要)
-  - VLMで文字抽出(読めなければ空)
-  - ベクトル化 → S3 Vectorsでtop-20検索
-3. スコア計算(BBoxごと):
-  - cosine distance → sim(=1−distance)に変換、sim_raw を保持
-  - 文字一致ブースト +0.05(部分一致 or 編集距離0.7以上)
-  - 文字不一致ペナルティ −0.05(両者に文字がある場合のみ。クエリOCR失敗時は発動しない)
-  - margin: sim_raw ベースで、top1と別object_id最上位の差
-  - votes: 実装は残すが判定には未使用(登録物体数が増えたら再評価)
-4. 3値判定(確定値):
-  - 緑: sim >= 0.85 かつ (margin >= 0.10 または文字一致)
-  - 黄: sim >= 0.72
-  - 赤: それ以外
-5. object_id で重複排除 → DynamoDBから情報+サムネ取得 → レスポンス
+
+### バックエンド (search Lambda)
+1. クエリ画像を S3 から取得 → EXIF transpose → リサイズ (1024x1024)
+2. Nova Lite で BBox 検出 → 中央×面積スコアで上位**10個**を選定
+3. 各 BBox を asyncio 並列で処理:
+   - crop_bbox (余白6%) でクロップ
+   - VLM で文字抽出 (読めなければ空)
+   - **CLAHE光正規化** → Titan でベクトル化 → S3 Vectors で top-20 検索
+4. スコア計算 (BBoxごと):
+   - cosine distance → sim (=1−distance), sim_raw を保持
+   - 文字一致ブースト +0.05 / 文字不一致ペナルティ −0.05
+   - margin: sim_raw ベースで top1 と別object_id最上位の差
+   - votes: top-k 内の top1_id 出現数
+5. 3値判定:
+   - 緑: sim >= 0.80 かつ (margin >= 0.10 or 文字一致)
+   - 黄: sim >= 0.72 かつ votes >= 2
+   - 赤: それ以外
+6. object_id で重複排除 → DynamoDB から情報+サムネ取得 → レスポンス
+
 ### クライアント
-6. オーバーレイ表示: 緑=タップで情報閲覧・追加 / 黄=サムネ提示「この物体?」Yes/No / 赤=新規登録導線
+7. BBox オーバーレイ表示 (0-1000 スケール → CSS % 変換):
+   - 緑: タップで情報閲覧 + 情報追加フォーム
+   - 黄: サムネ提示「この物体?」Yes/No
+   - 赤: 新規登録導線 (/register へ遷移)
 
 ## 物体情報追加フロー
-1. 緑BBoxタップ → 既存情報表示 → 追加入力
-2. DynamoDB info リストに追記({text, user_id, created_at})
-3. 以降の他ユーザーの検索でオーバーレイ表示
-4. 黄でYes回答 → 正解ラベルとして蓄積(閾値再調整・将来はクエリ画像の追加ベクトル登録ループ)
-5. 荒らし対策(通報・削除)は将来対応
 
-## モデル乗り換え運用(blue/green)
-1. 新インデックス作成(次元は新モデルに合わせる)
+1. 緑BBoxタップ → 既存情報一覧表示 → 追加入力
+2. POST /objects/{id}/info → DynamoDB info リストに追記 (upsert方式)
+   - レコードが存在しなくても自動作成
+   - {text, user_id(Cognito sub), created_at}
+3. 以降の検索でオーバーレイ表示に反映
+4. 黄でYes回答 → 正解ラベルとして蓄積 (将来: 閾値再調整)
+
+## フロントエンド構成
+
+### 技術スタック
+- Next.js 14 (App Router)
+- Tailwind CSS 3.4
+- aws-amplify 6 + @aws-amplify/ui-react 6
+
+### ページ構成
+- `/` — 検索画面 (SearchFlow コンポーネント)
+- `/register` — 登録画面 (RegisterFlow コンポーネント)
+
+### 主要コンポーネント
+- `camera.tsx` — リアカメラ起動、ガイド枠、captureFrame() (表示範囲のみキャプチャ)
+- `search-flow.tsx` — 撮影→アップロード→検索→結果表示の統合フロー
+- `search-result.tsx` — BBoxオーバーレイ(緑/黄/赤)、詳細パネル、情報追加
+- `register-flow.tsx` — 撮影→プルーニング→フレーム選択→アップロード→情報入力→登録
+- `frame-selector.tsx` — プルーニング後フレーム一覧、代表画像選択
+- `info-input.tsx` — 登録時の初期物体情報入力
+- `job-progress.tsx` — ジョブポーリング(3秒間隔)、経過時間表示
+
+### UI設定 (app/lib/ui-config.ts)
+- BBOX_BORDER_WIDTH: 4px
+- カメラ領域: max-h-[70dvh]
+
+### デバッグログ (console.log)
+全コンポーネント・ライブラリにプレフィックス付きログ:
+- `[camera]` / `[upload]` / `[api]` / `[search-flow]` / `[register-flow]` / `[frame-capture]` / `[bbox-selector]` / `[job-progress]` / `[info-input]`
+
+## eden 共通パッケージ (Python)
+
+### モジュール構成
+```
+eden/
+├── __init__.py
+├── config.py          # 閾値・定数・環境変数オーバーライド
+├── clients.py         # boto3クライアント生成ヘルパー
+├── detection.py       # BBox検出 (Nova Lite)
+├── crop.py            # クロップ (余白6%)、中央物体選択
+├── ocr.py             # 文字抽出 (Nova Lite)、正規化
+├── embedding.py       # Titan Multimodal (4方向回転、CLAHE前処理付き)
+├── search.py          # S3 Vectors query、スコア計算、3値判定
+├── guardrail.py       # Rekognition (顔/人物/NSFW)
+├── image_util.py      # JPEG変換、EXIF、CLAHE光正規化
+└── requirements.txt   # boto3, numpy, Pillow
+```
+
+### 主要設定値 (eden/config.py)
+| 設定 | デフォルト | 環境変数 |
+|---|---|---|
+| GREEN_SIM | 0.80 | EDEN_GREEN_SIM |
+| GREEN_MARGIN | 0.10 | EDEN_GREEN_MARGIN |
+| YELLOW_SIM | 0.72 | EDEN_YELLOW_SIM |
+| CROP_PAD | 0.06 | EDEN_CROP_PAD |
+| MAX_IMAGE_SIZE | 1024 | EDEN_MAX_IMAGE_SIZE |
+| EMBED_DIM | 1024 | EDEN_EMBED_DIM |
+| TOP_K | 20 | EDEN_TOP_K |
+| ROTATIONS | [0,90,180,270] | — |
+
+## モデル乗り換え運用 (blue/green)
+
+1. 新インデックス作成 (次元は新モデルに合わせる)
 2. S3保存済みクロップからバッチ再埋め込み → 新インデックスへ
-3. 評価データセットで07_evaluate.pyを回して閾値再キャリブレーション
+3. 評価データセットで 07_evaluate.py を回して閾値再キャリブレーション
 4. 参照先切り替え → 旧インデックス削除
 
+## 今後の精度改善候補 (未実装)
 
+- 検索時にクエリ画像を4方向回転して検索 (角度ミスマッチ軽減)
+- 全体 + 中央50%クロップの2パターン登録 (部分一致対応)
+- 4分割ベクトル化 (見切れ対応)
+- BBox選択のUI復活 (複数候補から選ばせる)
+- Nova Pro への切り替え (コスト13倍のため保留)
