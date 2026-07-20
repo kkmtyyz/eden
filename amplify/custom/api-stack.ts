@@ -11,6 +11,7 @@ import * as sqs from "aws-cdk-lib/aws-sqs";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as cognito from "aws-cdk-lib/aws-cognito";
 import * as s3vectors from "aws-cdk-lib/aws-s3vectors";
+import * as bedrock from "aws-cdk-lib/aws-bedrock";
 import * as lambdaEventSources from "aws-cdk-lib/aws-lambda-event-sources";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -88,6 +89,23 @@ export class ApiStack extends Construct {
     vectorIndex.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
     vectorIndex.addDependency(vectorBucket);
 
+    // ─── Bedrock Guardrails (テキストガードレール) ──────────────────
+    const textGuardrail = new bedrock.CfnGuardrail(this, "TextGuardrail", {
+      name: "eden-text-guardrail",
+      description: "Eden コメント入力に対するコンテンツフィルター (Standard Tier, 日本語対応)",
+      blockedInputMessaging: "このコメントは不適切な内容を含むため投稿できません。",
+      blockedOutputsMessaging: "不適切な内容が検出されました。",
+      contentPolicyConfig: {
+        filtersConfig: [
+          { type: "HATE", inputStrength: "MEDIUM", outputStrength: "MEDIUM" },
+          { type: "INSULTS", inputStrength: "MEDIUM", outputStrength: "MEDIUM" },
+          { type: "SEXUAL", inputStrength: "HIGH", outputStrength: "HIGH" },
+          { type: "VIOLENCE", inputStrength: "MEDIUM", outputStrength: "MEDIUM" },
+          { type: "MISCONDUCT", inputStrength: "MEDIUM", outputStrength: "MEDIUM" },
+        ],
+      },
+    });
+
     // ─── Lambda Layer (eden パッケージ) ───────────────────────────
     const edenLayer = new lambda.LayerVersion(this, "EdenLayer", {
       code: lambda.Code.fromAsset(path.join(__dirname, "../../eden"), {
@@ -146,9 +164,9 @@ export class ApiStack extends Construct {
         REGISTER_QUEUE_URL: registerQueue.queueUrl,
         EDEN_VECTOR_BUCKET: vectorBucketName,
         EDEN_VECTOR_INDEX: "eden-index",
-        EDEN_TEXT_GUARDRAIL_ID: process.env.EDEN_TEXT_GUARDRAIL_ID || "",
-        EDEN_TEXT_GUARDRAIL_VERSION: process.env.EDEN_TEXT_GUARDRAIL_VERSION || "1",
-        EDEN_TEXT_GUARDRAIL_REGION: process.env.EDEN_TEXT_GUARDRAIL_REGION || "ap-northeast-1",
+        EDEN_TEXT_GUARDRAIL_ID: textGuardrail.attrGuardrailId,
+        EDEN_TEXT_GUARDRAIL_VERSION: textGuardrail.attrVersion,
+        EDEN_TEXT_GUARDRAIL_REGION: cdk.Aws.REGION,
       },
     };
 
@@ -270,7 +288,7 @@ export class ApiStack extends Construct {
     // Bedrock Guardrails (テキストガードレール)
     const bedrockGuardrailPolicy = new iam.PolicyStatement({
       actions: ["bedrock:ApplyGuardrail"],
-      resources: ["*"],
+      resources: [textGuardrail.attrGuardrailArn],
     });
     registerFn.addToRolePolicy(bedrockGuardrailPolicy);
     addInfoFn.addToRolePolicy(bedrockGuardrailPolicy);
