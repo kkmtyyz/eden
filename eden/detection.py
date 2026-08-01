@@ -1,6 +1,10 @@
-"""BBox検出: Nova Lite による物体バウンディングボックス検出。"""
+"""BBox検出: Nova Lite による物体バウンディングボックス検出。
+
+Constrained Decoding (tool use) を使用して構造化出力を保証する。
+"""
 
 import json
+import logging
 import re
 
 from PIL import Image
@@ -9,7 +13,43 @@ from eden import config
 from eden.clients import get_bedrock_client
 from eden.image_util import jpeg_bytes
 
-BBOX_PROMPT = """Detect all distinct physical objects in this image.
+logger = logging.getLogger(__name__)
+
+BBOX_SYSTEM_PROMPT = "Detect all distinct physical objects in the image and report their bounding boxes using the DetectObjects tool. Coordinates are on a [0, 1000) scale."
+
+# Tool use による構造化出力定義
+BBOX_TOOL_CONFIG = {
+    "tools": [
+        {
+            "toolSpec": {
+                "name": "DetectObjects",
+                "description": "Report bounding boxes of all distinct physical objects detected in the image. Each box is [x1, y1, x2, y2] on a 0-1000 scale.",
+                "inputSchema": {
+                    "json": {
+                        "type": "object",
+                        "properties": {
+                            "boxes": {
+                                "type": "array",
+                                "description": "Array of bounding boxes, each [x1, y1, x2, y2] on 0-1000 scale",
+                                "items": {
+                                    "type": "array",
+                                    "items": {"type": "integer"},
+                                    "minItems": 4,
+                                    "maxItems": 4,
+                                },
+                            }
+                        },
+                        "required": ["boxes"],
+                    }
+                },
+            }
+        }
+    ],
+    "toolChoice": {"tool": {"name": "DetectObjects"}},
+}
+
+# フォールバック用プロンプト (tool use が失敗した場合)
+BBOX_PROMPT_FALLBACK = """Detect all distinct physical objects in this image.
 For each object, output its bounding box on a scale of [0, 1000).
 Output ONLY a LIST, no other text:
 [ [x1, y1, x2, y2], ...]"""
@@ -23,6 +63,9 @@ def detect_boxes(
 ) -> list[list[int]]:
     """画像から物体のBBox一覧を検出して返す。
 
+    Tool use (constrained decoding) を使用して構造化出力を保証する。
+    失敗時はフォールバックとしてプロンプトベースの出力をパースする。
+
     Args:
         img: 入力画像 (RGB, リサイズ済み推奨)
         client: bedrock-runtime クライアント (Noneならデフォルト生成)
@@ -34,6 +77,52 @@ def detect_boxes(
     client = client or get_bedrock_client(region=config.BBOX_REGION)
     model_id = model_id or config.BBOX_MODEL_ID
 
+    try:
+        return _detect_with_tool_use(img, client, model_id)
+    except Exception as e:
+        logger.warning("[detection] tool use 失敗、フォールバック: %s", e)
+        return _detect_with_prompt(img, client, model_id)
+
+
+def _detect_with_tool_use(
+    img: Image.Image,
+    client,
+    model_id: str,
+) -> list[list[int]]:
+    """Tool use (constrained decoding) でBBox検出。"""
+    resp = client.converse(
+        modelId=model_id,
+        system=[{"text": BBOX_SYSTEM_PROMPT}],
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"image": {"format": "jpeg", "source": {"bytes": jpeg_bytes(img)}}},
+                    {"text": "Detect all objects in this image."},
+                ],
+            }
+        ],
+        toolConfig=BBOX_TOOL_CONFIG,
+        inferenceConfig={"temperature": 0.0},
+    )
+
+    # tool use レスポンスから boxes を抽出
+    for block in resp["output"]["message"]["content"]:
+        if "toolUse" in block:
+            tool_input = block["toolUse"]["input"]
+            boxes = tool_input.get("boxes", [])
+            logger.info("[detection] tool use 成功: %d boxes 検出", len(boxes))
+            return _validate(boxes)
+
+    raise ValueError("Tool use レスポンスに toolUse ブロックが見つからない")
+
+
+def _detect_with_prompt(
+    img: Image.Image,
+    client,
+    model_id: str,
+) -> list[list[int]]:
+    """フォールバック: プロンプトベースでBBox検出。"""
     resp = client.converse(
         modelId=model_id,
         messages=[
@@ -41,7 +130,7 @@ def detect_boxes(
                 "role": "user",
                 "content": [
                     {"image": {"format": "jpeg", "source": {"bytes": jpeg_bytes(img)}}},
-                    {"text": BBOX_PROMPT},
+                    {"text": BBOX_PROMPT_FALLBACK},
                 ],
             }
         ],
@@ -91,7 +180,7 @@ def repair_boxes(text: str, min_size: int = 5) -> list[list[int]]:
     return _validate(boxes, min_size)
 
 
-def _validate(boxes: list, min_size: int) -> list[list[int]]:
+def _validate(boxes: list, min_size: int = 5) -> list[list[int]]:
     """クランプ・座標順の正規化・退化ボックスの除去。"""
     out: list[list[int]] = []
     for b in boxes:
