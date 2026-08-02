@@ -78,7 +78,7 @@ export class ApiStack extends Construct {
 
     const vectorIndex = new s3vectors.CfnIndex(this, "VectorIndex", {
       vectorBucketName,
-      indexName: "eden-index",
+      indexName: "eden-index-v2",
       dataType: "float32",
       dimension: 1024,
       distanceMetric: "cosine",
@@ -177,7 +177,7 @@ export class ApiStack extends Construct {
         IMAGE_BUCKET: imageBucket.bucketName,
         REGISTER_QUEUE_URL: registerQueue.queueUrl,
         EDEN_VECTOR_BUCKET: vectorBucketName,
-        EDEN_VECTOR_INDEX: "eden-index",
+        EDEN_VECTOR_INDEX: "eden-index-v2",
         EDEN_TEXT_GUARDRAIL_ID: textGuardrail.attrGuardrailId,
         EDEN_TEXT_GUARDRAIL_VERSION: textGuardrail.attrVersion,
         EDEN_TEXT_GUARDRAIL_REGION: cdk.Aws.REGION,
