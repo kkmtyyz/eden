@@ -118,24 +118,33 @@ def _search_single(img: Image.Image, box: list) -> dict:
 
     # 物体情報を付加
     info = None
+    verdict = result.verdict
+    object_id = result.object_id
     if result.object_id and result.verdict in ("green", "yellow"):
         try:
             resp = objects_table.get_item(Key={"object_id": result.object_id})
             item = resp.get("Item", {})
-            info = {
-                "object_id": result.object_id,
-                "thumbnail_key": item.get("thumbnail_key"),
-                "info": item.get("info", []),
-            }
-            logger.info("[search] DynamoDB 物体情報取得: object_id=%s, info_count=%d",
-                        result.object_id, len(item.get("info", [])))
+            if not item:
+                # DynamoDBにレコードがない = ゴーストベクトル → red に降格
+                logger.warning("[search] ゴーストベクトル検出: object_id=%s (DynamoDBにレコードなし) → red降格",
+                              result.object_id)
+                verdict = "red"
+                object_id = None
+            else:
+                info = {
+                    "object_id": result.object_id,
+                    "thumbnail_key": item.get("thumbnail_key"),
+                    "info": item.get("info", []),
+                }
+                logger.info("[search] DynamoDB 物体情報取得: object_id=%s, thumbnail_key=%s, info_count=%d",
+                            result.object_id, item.get("thumbnail_key"), len(item.get("info", [])))
         except Exception as e:
             logger.warning("[search] DynamoDB 物体情報取得失敗: object_id=%s, error=%s", result.object_id, str(e))
 
     return {
         "box": box,
-        "verdict": result.verdict,
-        "object_id": result.object_id,
+        "verdict": verdict,
+        "object_id": object_id,
         "sim": result.sim,
         "margin": result.margin,
         "votes": result.votes,
