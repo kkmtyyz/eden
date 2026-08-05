@@ -34,32 +34,38 @@ def _normalize_ddb_response(ddb_hits: list[dict[str, Any]]) -> list[dict]:
     """DynamoDB Vector Search のレスポンスを eden.search.query_vectors 互換形式に変換する。
 
     DynamoDB search_vectors レスポンス形式:
-        [{"Item": {...}, "Distance": float}, ...]
+        [{"Item": {"object_id": {"S": "..."}, "text_tokens": {"SS": [...]}, ...}, "Score": float}, ...]
+        Score は cosine similarity (高いほど類似)
 
     eden.search.query_vectors 互換形式:
         [{"distance": float, "metadata": {"object_id": str, "text_tokens": list}}, ...]
+        distance は cosine distance (低いほど類似) = 1 - similarity
 
     Args:
-        ddb_hits: DynamoDB search_vectors の生レスポンス
+        ddb_hits: DynamoDB search_vectors の SearchResults リスト
 
     Returns:
         正規化されたヒットリスト
     """
     normalized = []
     for hit in ddb_hits:
-        distance = hit.get("Distance", 0.0)
+        # Score は cosine similarity (0〜1)。distance = 1 - similarity に変換
+        score = hit.get("Score", 0.0)
+        distance = 1.0 - score
 
-        # DynamoDB アイテムからメタデータを抽出
+        # DynamoDB アイテムからメタデータを抽出 (AttributeValue形式)
         item = hit.get("Item", {})
 
-        # vector_id からobject_idを取得（フォールバック対応）
-        vector_id = item.get("vector_id", {}).get("S", "")
-        try:
-            parsed = parse_vector_id(vector_id)
-            object_id = parsed["object_id"]
-        except ValueError:
-            # vector_idパース失敗時はobject_idフィールドから取得
-            object_id = item.get("object_id", {}).get("S", "unknown")
+        # object_id の取得
+        object_id = item.get("object_id", {}).get("S", "")
+        if not object_id:
+            # フォールバック: vector_id からパース
+            vector_id = item.get("vector_id", {}).get("S", "")
+            try:
+                parsed = parse_vector_id(vector_id)
+                object_id = parsed["object_id"]
+            except ValueError:
+                object_id = "unknown"
 
         # text_tokens の取得 (SS型 = String Set)
         text_tokens_raw = item.get("text_tokens", {}).get("SS", [])
@@ -153,7 +159,7 @@ def query_vectors_ddb(
         TopK=top_k,
     )
 
-    ddb_hits = resp.get("Hits", [])
+    ddb_hits = resp.get("SearchResults", [])
     return _normalize_ddb_response(ddb_hits)
 
 
