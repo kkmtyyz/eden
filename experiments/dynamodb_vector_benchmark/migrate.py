@@ -231,7 +231,7 @@ def migrate_data(
                 "object_id": {"S": object_id},
                 "source_file": {"S": source_file},
                 "rotation": {"N": str(rotation)},
-                "vector": {"VF": vector_data},
+                "vector": {"L": [{"N": str(v)} for v in vector_data]},
             }
 
             # text_tokens は非空の場合のみ
