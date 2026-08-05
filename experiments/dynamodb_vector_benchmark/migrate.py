@@ -330,25 +330,33 @@ def main():
         parser.print_help()
         sys.exit(1)
 
-    session = boto3.Session(profile_name=args.profile) if args.profile else boto3.Session()
-    ddb_client = session.client("dynamodb", region_name=config.VECTOR_REGION)
+    from .settings import aws_profile, aws_region, ddb_table, ddb_index, s3v_bucket, s3v_index, s3v_region
+
+    # CLI引数 > config.yaml > デフォルト の優先順位
+    profile = args.profile or aws_profile()
+    region = aws_region()
+    table_name = args.table_name if args.table_name != DEFAULT_TABLE_NAME else ddb_table()
+    index_name = args.index_name if args.index_name != DEFAULT_INDEX_NAME else ddb_index()
+
+    session = boto3.Session(profile_name=profile) if profile else boto3.Session()
+    ddb_client = session.client("dynamodb", region_name=region)
 
     if args.delete_table:
-        delete_table(args.table_name, client=ddb_client)
+        delete_table(table_name, client=ddb_client)
         return
 
     if args.create_table:
         create_table(
-            args.table_name,
-            args.index_name,
+            table_name,
+            index_name,
             client=ddb_client,
             session=session,
         )
 
     if args.migrate:
-        s3v_client = get_s3vectors_client(session=session)
+        s3v_client = session.client("s3vectors", region_name=s3v_region())
         migrate_data(
-            args.table_name,
+            table_name,
             ddb_client=ddb_client,
             s3v_client=s3v_client,
             session=session,
