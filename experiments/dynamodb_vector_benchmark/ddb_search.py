@@ -96,7 +96,8 @@ def check_vector_index_active(
     """
     if client is None:
         s = session or boto3.Session()
-        client = s.client("dynamodb", region_name=config.VECTOR_REGION)
+        from .settings import ddb_region
+        client = s.client("dynamodb", region_name=ddb_region())
 
     try:
         resp = client.describe_table(TableName=table_name)
@@ -128,7 +129,7 @@ def query_vectors_ddb(
 
     Args:
         vector: クエリベクトル (float32のリスト)
-        top_k: 返却件数 (Noneなら config.TOP_K)
+        top_k: 返却件数 (Noneなら config.yaml の top_k)
         table_name: DynamoDBテーブル名
         index_name: ベクトルインデックス名
         client: DynamoDB クライアント
@@ -139,9 +140,11 @@ def query_vectors_ddb(
     """
     if client is None:
         s = session or boto3.Session()
-        client = s.client("dynamodb", region_name=config.VECTOR_REGION)
+        from .settings import ddb_region
+        client = s.client("dynamodb", region_name=ddb_region())
 
-    top_k = top_k or config.TOP_K
+    from .settings import top_k as cfg_top_k
+    top_k = top_k or cfg_top_k()
 
     resp = client.search_vectors(
         TableName=table_name,

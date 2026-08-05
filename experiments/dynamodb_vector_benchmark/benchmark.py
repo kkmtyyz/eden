@@ -107,7 +107,10 @@ def _run_single_query(
 
     # --- S3 Vectors クエリ ---
     t0 = time.perf_counter()
-    s3v_hits = query_vectors(vec_list, client=s3v_client)
+    s3v_hits = query_vectors(
+            vec_list, client=s3v_client,
+            bucket=s3v_bucket(), index=s3v_index(),
+        )
     s3v_latency_ms = (time.perf_counter() - t0) * 1000
 
     # S3 Vectors 結果処理
@@ -199,14 +202,19 @@ def run_benchmark(
     Returns:
         ベンチマーク結果辞書
     """
+    from .settings import (
+        aws_region, s3v_bucket, s3v_index, s3v_region,
+        ddb_region, bbox_region, embed_region, text_region, top_k,
+    )
+
     s = session or boto3.Session()
 
-    # クライアント初期化
-    bbox_client = get_bedrock_client(session=s)
-    embed_client = get_bedrock_embed_client(session=s)
-    text_client = get_bedrock_text_client(session=s)
-    s3v_client = get_s3vectors_client(session=s)
-    ddb_client = s.client("dynamodb", region_name=config.VECTOR_REGION)
+    # クライアント初期化 (config.yaml の設定を使用)
+    bbox_client = s.client("bedrock-runtime", region_name=bbox_region())
+    embed_client = s.client("bedrock-runtime", region_name=embed_region())
+    text_client = s.client("bedrock-runtime", region_name=text_region())
+    s3v_client = s.client("s3vectors", region_name=s3v_region())
+    ddb_client = s.client("dynamodb", region_name=ddb_region())
 
     # インデックス状態確認
     if not check_vector_index_active(table_name, index_name, client=ddb_client):
@@ -227,7 +235,7 @@ def run_benchmark(
     print(f"  クエリ画像数: {len(query_images)}")
     print(f"  イテレーション数: {iterations}")
     print(f"  ウォームアップ: {'あり (1回)' if warmup else 'なし'}")
-    print(f"  S3 Vectors: {config.VECTOR_BUCKET}/{config.VECTOR_INDEX}")
+    print(f"  S3 Vectors: {s3v_bucket()}/{s3v_index()}")
     print(f"  DynamoDB: {table_name}/{index_name}")
 
     # ウォームアップ (結果は破棄)

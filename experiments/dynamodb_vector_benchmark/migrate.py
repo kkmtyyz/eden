@@ -35,7 +35,8 @@ from .utils import build_vector_id
 # デフォルト設定
 DEFAULT_TABLE_NAME = DDB_TABLE_NAME
 DEFAULT_INDEX_NAME = DDB_INDEX_NAME
-VECTOR_DIM = config.EMBED_DIM  # 1024
+from .settings import embed_dim
+VECTOR_DIM = embed_dim()  # 1024
 
 
 def create_table(
@@ -59,7 +60,8 @@ def create_table(
     """
     if client is None:
         s = session or boto3.Session()
-        client = s.client("dynamodb", region_name=config.VECTOR_REGION)
+        from .settings import ddb_region
+        client = s.client("dynamodb", region_name=ddb_region())
 
     print(f"テーブル作成開始: {table_name}")
     print(f"  インデックス: {index_name}")
@@ -134,8 +136,9 @@ def _fetch_all_s3_vectors(
     Returns:
         ベクトルデータリスト
     """
-    bucket = bucket or config.VECTOR_BUCKET
-    index = index or config.VECTOR_INDEX
+    from .settings import s3v_bucket, s3v_index
+    bucket = bucket or s3v_bucket()
+    index = index or s3v_index()
 
     all_vectors = []
     next_token = None
@@ -185,12 +188,14 @@ def migrate_data(
     """
     s = session or boto3.Session()
     if ddb_client is None:
-        ddb_client = s.client("dynamodb", region_name=config.VECTOR_REGION)
+        from .settings import ddb_region, s3v_region
+        ddb_client = s.client("dynamodb", region_name=ddb_region())
     if s3v_client is None:
-        s3v_client = get_s3vectors_client(session=s)
+        s3v_client = s.client("s3vectors", region_name=s3v_region())
 
     print("\n=== データ移行開始 ===")
-    print(f"  S3 Vectors: {config.VECTOR_BUCKET}/{config.VECTOR_INDEX}")
+    from .settings import s3v_bucket, s3v_index
+    print(f"  S3 Vectors: {s3v_bucket()}/{s3v_index()}")
     print(f"  DynamoDB: {table_name}")
 
     # S3 Vectors からデータ取得
@@ -273,7 +278,8 @@ def delete_table(
     """
     if client is None:
         s = session or boto3.Session()
-        client = s.client("dynamodb", region_name=config.VECTOR_REGION)
+        from .settings import ddb_region
+        client = s.client("dynamodb", region_name=ddb_region())
 
     try:
         client.delete_table(TableName=table_name)
