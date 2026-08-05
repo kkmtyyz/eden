@@ -1,0 +1,44 @@
+# DynamoDB Vector Search ベンチマーク設定ファイル
+# 自分の環境に合わせて書き換えてください
+
+# AWS設定
+aws:
+  profile: kkmtyyz_mfa
+  region: ap-northeast-1
+
+# S3 Vectors (既存)
+s3_vectors:
+  bucket: eden-vec-xxxxxxx        # ← 実際のバケット名に書き換え
+  index: eden-index
+  region: ap-northeast-1
+
+# DynamoDB Vector Search (ベンチマーク用に新規作成)
+dynamodb_vector:
+  table: eden-vector-benchmark
+  index: eden-vector-index
+  region: ap-northeast-1
+
+# 既存 DynamoDB (物体メタデータ移行元)
+dynamodb_objects:
+  table: eden-objects              # ← 実際のObjectsテーブル名に書き換え
+  region: ap-northeast-1
+
+# S3 (画像バケット)
+s3_images:
+  bucket: eden-images-xxxxxxx     # ← 実際のバケット名に書き換え
+
+# Bedrock
+bedrock:
+  bbox_region: ap-northeast-1
+  embed_region: us-east-1
+  text_region: ap-northeast-1
+  bbox_model: amazon.nova-lite-v1:0
+  embed_model: amazon.titan-embed-image-v1
+  text_model: amazon.nova-lite-v1:0
+
+# ベンチマーク設定
+benchmark:
+  top_k: 20
+  embed_dim: 1024
+  iterations: 10
+  warmup: true
