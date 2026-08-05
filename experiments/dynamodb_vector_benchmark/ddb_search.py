@@ -49,9 +49,10 @@ def _normalize_ddb_response(ddb_hits: list[dict[str, Any]]) -> list[dict]:
     """
     normalized = []
     for hit in ddb_hits:
-        # Score は cosine similarity (0〜1)。distance = 1 - similarity に変換
+        # Score は cosine distance (低いほど類似, 0 = 同一ベクトル)
+        # DynamoDB ブログ: "For Cosine, lower similarity score values indicate higher similarity"
         score = hit.get("Score", 0.0)
-        distance = 1.0 - score
+        distance = score
 
         # DynamoDB アイテムからメタデータを抽出 (AttributeValue形式)
         item = hit.get("Item", {})
