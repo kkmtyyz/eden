@@ -352,7 +352,14 @@ def main():
         print(f"エラー: クエリディレクトリが見つかりません: {args.query_dir}")
         sys.exit(1)
 
-    session = boto3.Session(profile_name=args.profile) if args.profile else boto3.Session()
+    from .settings import aws_profile, ddb_table, ddb_index
+
+    # CLI引数 > config.yaml > デフォルト
+    profile = args.profile or aws_profile()
+    table_name = args.table_name if args.table_name != DDB_TABLE_NAME else ddb_table()
+    index_name = args.index_name if args.index_name != DDB_INDEX_NAME else ddb_index()
+
+    session = boto3.Session(profile_name=profile) if profile else boto3.Session()
 
     # ベンチマーク実行
     results = run_benchmark(
@@ -360,8 +367,8 @@ def main():
         iterations=args.iterations,
         warmup=not args.no_warmup,
         session=session,
-        table_name=args.table_name,
-        index_name=args.index_name,
+        table_name=table_name,
+        index_name=index_name,
     )
 
     # レポート出力
