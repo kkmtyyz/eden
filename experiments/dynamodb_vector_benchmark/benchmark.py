@@ -54,6 +54,20 @@ from .report import (
     print_cost_estimate,
     print_latency_table,
 )
+from .settings import (
+    aws_profile,
+    aws_region,
+    s3v_bucket,
+    s3v_index,
+    s3v_region,
+    ddb_table,
+    ddb_index,
+    ddb_region,
+    bbox_region,
+    embed_region,
+    text_region,
+    top_k as cfg_top_k,
+)
 
 
 def _run_single_query(
