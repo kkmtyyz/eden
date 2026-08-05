@@ -1,5 +1,5 @@
 <!-- このファイルはKiroのsteering用ドキュメントです。開発時に参照してください。 -->
-<!-- 最終更新: 2026-07-19 (kiro/dev ブランチの実装に基づく) -->
+<!-- 最終更新: 2026-08-05 (kiro/dev ブランチの実装に基づく) -->
 
 # 機能別整理
 
@@ -16,14 +16,17 @@
 5. 全フレームを presigned PUT で S3 に直アップロード (3並列)
 6. 代表画像で POST /bbox-candidates → BBox 自動選択 (default_index)
 7. **物体情報入力** (名前・説明テキスト) — 検索ヒット時に表示される初期情報
-8. POST /register (keys[], representative_key, box, initial_info) → job_id 取得
+   - テキストガードレール (Bedrock Guardrails) でチェック
+   - NG時: エラーメッセージ表示、情報入力画面に戻してやり直し (画像再アップ不要)
+8. POST /register (keys[], representative_key, box, object_id, initial_info) → job_id 取得
 9. GET /jobs/{id} を3秒ポーリング → 完了表示
+   - Rekognition NG時: 日本語メッセージで表示 (「この画像は登録できません（人物の顔が含まれています）」等)
 
 ### バックエンド (register_worker, SQS trigger) — 4並列処理
 10. 代表フレームのクロップでガードレール (Rekognition):
     - detect_faces / detect_labels(Person) / detect_moderation_labels → 該当なら登録拒否
 11. **Phase 1: BBox追跡 (4並列, ThreadPoolExecutor)**
-    - 全フレーム (最大50枚) に対してBBox検出 → IoU >= 0.3 で同一物体判定
+    - 全フレーム (最大50枚) に対してBBox検出 (tool use) → IoU >= 0.3 で同一物体判定
     - 追跡失敗フレームを除外
 12. **Phase 2: フレーム選定 (20枚)**
     - センタリングスコア: BBox中心が画像中心に近いほど高スコア
@@ -32,7 +35,7 @@
 13. **Phase 3: OCR + 埋め込み (4並列, ThreadPoolExecutor)**
     - BBoxクロップ (EXIF transpose済み、余白6%)
     - クロップ画像を S3 に保存 (再埋め込み原本)
-    - 代表フレームのクロップをサムネイル (256x256) として保存
+    - 代表フレームのクロップをサムネイル (256x256) として保存 (**新規登録時のみ、追加登録時はサムネ維持**)
     - VLM(Nova Lite)でクロップ後画像から文字抽出 → NFKC正規化・小文字化・トークン化
     - **CLAHE光正規化** → 4方向回転 → Titan Multimodal Embeddings で1024次元ベクトル化
 14. **Phase 4: 登録**
@@ -57,7 +60,7 @@
 
 ### バックエンド (search Lambda)
 1. クエリ画像を S3 から取得 → EXIF transpose → リサイズ (1024x1024)
-2. Nova Lite で BBox 検出 → 中央×面積スコアで上位**10個**を選定
+2. Nova Lite で BBox 検出 (tool use, constrained decoding) → 中央×面積スコアで上位**10個**を選定
 3. 各 BBox を asyncio 並列で処理:
    - crop_bbox (余白6%) でクロップ
    - VLM で文字抽出 (読めなければ空)
@@ -72,21 +75,39 @@
    - 黄: sim >= 0.72 かつ votes >= 2
    - 赤: それ以外
 6. object_id で重複排除 → DynamoDB から情報+サムネ取得 → レスポンス
+   - **ゴーストベクトル防御**: DynamoDB にレコードがない場合は red に降格
 
 ### クライアント
 7. BBox オーバーレイ表示 (0-1000 スケール → CSS % 変換):
-   - 緑: タップで情報閲覧 + 情報追加フォーム
-   - 黄: サムネ提示「この物体?」Yes/No
+   - 緑: サムネイル表示 + 情報閲覧 + 情報追加フォーム
+   - 黄: サムネイル表示 + 「この物体?」Yes/No (投票機能付き)
    - 赤: 新規登録導線 (/register へ遷移)
+
+## 黄色確認UI (投票機能)
+
+- 「はい」ボタン押下時:
+  1. registerObject(imageKey, box, object_id) で既存物体にベクトル追加登録
+  2. SQS → register_worker がベクトル追加 (1枚×4回転 = 最大4ベクトル)
+  3. ジョブポーリングで進捗表示 (登録中→処理中→完了/失敗)
+  4. 追加登録時はサムネイルを上書きしない (登録時のユーザー選択を維持)
+- 「いいえ」ボタン: テキスト表示のみ (将来拡張予定)
 
 ## 物体情報追加フロー
 
 1. 緑BBoxタップ → 既存情報一覧表示 → 追加入力
-2. POST /objects/{id}/info → DynamoDB info リストに追記 (upsert方式)
+2. テキストガードレール (Bedrock Guardrails) でチェック
+   - NG時: フォーム下に赤文字で「不適切な表現が含まれています」表示
+3. POST /objects/{id}/info → DynamoDB info リストに追記 (upsert方式)
    - レコードが存在しなくても自動作成
    - {text, user_id(Cognito sub), created_at}
-3. 以降の検索でオーバーレイ表示に反映
-4. 黄でYes回答 → 正解ラベルとして蓄積 (将来: 閾値再調整)
+4. 以降の検索でオーバーレイ表示に反映
+
+## サムネイル表示フロー
+
+- 緑/黄パネル表示時に thumbnail_key があれば:
+  1. POST /download-url に key を送信 → presigned GET URL 取得
+  2. URL で `<img>` タグに画像表示
+  3. ローディング中はプレースホルダー、エラー時はサイレントフォールバック
 
 ## フロントエンド構成
 
@@ -101,11 +122,11 @@
 
 ### 主要コンポーネント
 - `camera.tsx` — リアカメラ起動、ガイド枠、captureFrame() (表示範囲のみキャプチャ)
-- `search-flow.tsx` — 撮影→アップロード→検索→結果表示の統合フロー
-- `search-result.tsx` — BBoxオーバーレイ(緑/黄/赤)、詳細パネル、情報追加
-- `register-flow.tsx` — 撮影→プルーニング→フレーム選択→アップロード→情報入力→登録
+- `search-flow.tsx` — 撮影→アップロード→検索→結果表示の統合フロー (imageKey をSearchResultに伝搬)
+- `search-result.tsx` — BBoxオーバーレイ(緑/黄/赤)、詳細パネル、情報追加、サムネイル表示、投票機能
+- `register-flow.tsx` — 撮影→プルーニング→フレーム選択→アップロード→情報入力→登録 (ガードレールNGでinfo-inputに戻す)
 - `frame-selector.tsx` — プルーニング後フレーム一覧、代表画像選択
-- `info-input.tsx` — 登録時の初期物体情報入力
+- `info-input.tsx` — 登録時の初期物体情報入力 (errorMessage prop でエラー表示)
 - `job-progress.tsx` — ジョブポーリング(3秒間隔)、経過時間表示
 
 ### UI設定 (app/lib/ui-config.ts)
@@ -124,12 +145,13 @@ eden/
 ├── __init__.py
 ├── config.py          # 閾値・定数・環境変数オーバーライド
 ├── clients.py         # boto3クライアント生成ヘルパー
-├── detection.py       # BBox検出 (Nova Lite)
+├── detection.py       # BBox検出 (Nova Lite, tool use + フォールバック)
 ├── crop.py            # クロップ (余白6%)、中央物体選択
 ├── ocr.py             # 文字抽出 (Nova Lite)、正規化
 ├── embedding.py       # Titan Multimodal (4方向回転、CLAHE前処理付き)
 ├── search.py          # S3 Vectors query、スコア計算、3値判定
 ├── guardrail.py       # Rekognition (顔/人物/NSFW)
+├── text_guardrail.py  # Bedrock Guardrails (ApplyGuardrail API, Standard Tier)
 ├── image_util.py      # JPEG変換、EXIF、CLAHE光正規化
 └── requirements.txt   # boto3, numpy, Pillow
 ```
@@ -145,6 +167,9 @@ eden/
 | EMBED_DIM | 1024 | EDEN_EMBED_DIM |
 | TOP_K | 20 | EDEN_TOP_K |
 | ROTATIONS | [0,90,180,270] | — |
+| TEXT_GUARDRAIL_ID | (空) | EDEN_TEXT_GUARDRAIL_ID |
+| TEXT_GUARDRAIL_VERSION | 1 | EDEN_TEXT_GUARDRAIL_VERSION |
+| TEXT_GUARDRAIL_REGION | ap-northeast-1 | EDEN_TEXT_GUARDRAIL_REGION |
 
 ## モデル乗り換え運用 (blue/green)
 
@@ -161,3 +186,4 @@ eden/
 - BBox選択のUI復活 (複数候補から選ばせる)
 - Nova Pro への切り替え (コスト13倍のため保留)
 - フレーム選定にブレスコア (Laplacian variance) も加味する (現在はセンタリング+多様性のみ)
+- DynamoDB Vector Search への移行 (ベンチマーク完了、P50 -26%速い、精度100%一致)

@@ -1,5 +1,5 @@
 <!-- このファイルはKiroのsteering用ドキュメントです。開発時に参照してください。 -->
-<!-- 最終更新: 2026-07-19 (kiro/dev ブランチの実装に基づく) -->
+<!-- 最終更新: 2026-08-05 (kiro/dev ブランチの実装に基づく) -->
 
 # 構成整理
 
@@ -20,7 +20,8 @@
 │        ├─ SQS (登録ジョブキュー, visibilityTimeout=15min)    │
 │        ├─ DynamoDB (物体テーブル + ジョブテーブル)            │
 │        ├─ S3 (画像バケット, CORS: PUT/GET/HEAD)              │
-│        └─ S3 Vectors (CDK管理, eden-vec-{hash})              │
+│        ├─ S3 Vectors (CDK管理, eden-vec-{hash})              │
+│        └─ Bedrock Guardrails (テキストガードレール, CDK管理)  │
 │                                                              │
 │  addOutput({custom: {apiEndpoint}})                          │
 │    → amplify_outputs.json 経由でフロントに自動注入            │
@@ -34,26 +35,34 @@
   - filterable: object_id, text_tokens
   - non-filterable: label, source_file, rotation
 - **Bedrock Nova Lite**: 東京 (BBox検出・文字抽出)
+  - BBox検出: tool use (constrained decoding) で構造化出力
+  - フォールバック: プロンプトベース + repair_boxes パーサー
 - **Bedrock Titan Multimodal**: us-east-1 (埋め込み, 東京未対応)
-- **Rekognition**: 東京 (ガードレール)
+- **Rekognition**: 東京 (画像ガードレール: 顔/人物/NSFW)
+- **Bedrock Guardrails**: 東京 (テキストガードレール: コメントモデレーション)
+  - Standard Tier (日本語対応, クロスリージョン推論)
+  - ApplyGuardrail API (スタンドアロン、モデル呼び出し不要)
+  - CDK CfnGuardrail で管理
 
 ## API・Lambda構成
 
 | エンドポイント | 方式 | Lambda処理 |
 |---|---|---|
 | POST /upload-url | 同期 | presigned PUT URL 発行 (S3v4署名, リージョン明示) |
-| POST /bbox-candidates | 同期 | 代表フレームにNova → BBox候補返却 |
-| POST /register | 同期(202) | SQSへ投入、job_id返却。keys[], representative_key, box, initial_info を受付 |
-| (SQS trigger) | 非同期 | ガードレール→追跡→クロップ→OCR→CLAHE光正規化→4方向埋め込み→S3 Vectors/DynamoDB登録 |
+| POST /download-url | 同期 | presigned GET URL 発行 (サムネイル/画像取得用) |
+| POST /bbox-candidates | 同期 | 代表フレームにNova (tool use) → BBox候補返却 |
+| POST /register | 同期(202) | テキストガードレール → SQSへ投入、job_id返却。keys[], representative_key, box, object_id, initial_info を受付 |
+| (SQS trigger) | 非同期 | ガードレール→追跡(4並列)→選定→OCR+埋め込み(4並列)→S3 Vectors/DynamoDB登録 |
 | GET /jobs/{id} | 同期 | ジョブ状態返却 (pending/processing/completed/failed) |
-| POST /search | 同期 | BBox検出→上位10個をasyncio並列→3値判定→情報付き返却 |
-| POST /objects/{id}/info | 同期 | DynamoDB info に追記 (upsert方式) |
+| POST /search | 同期 | BBox検出(tool use)→上位10個をasyncio並列→3値判定→ゴースト防御→情報付き返却 |
+| POST /objects/{id}/info | 同期 | テキストガードレール → DynamoDB info に追記 (upsert方式) |
 | (手動invoke) reset_data | — | 運用ツール: S3 Vectorsインデックス+DynamoDBを全削除 |
 
 ### 設計判断
 - Step Functions見送り (検索29秒内、登録SQS+Lambda15分で足りる)
 - ECS見送り (ボトルネックはBedrock RPMクォータ → 引き上げ申請が先)
 - API Gateway REST (Cognitoオーソライザーの相性が良い)
+- BBox検出: tool use (constrained decoding) を使用。フォールバックとしてプロンプトベース+JSONパーサー
 
 ## データストア
 
@@ -72,6 +81,23 @@
 - **物体テーブル**: PK=object_id, thumbnail_key, info: [{text, user_id, created_at}]
 - **ジョブテーブル**: PK=job_id, status, object_id, created_at, error
 
+## ガードレール
+
+### 画像ガードレール (Rekognition)
+- 登録時のみ (register_worker, 代表フレームのクロップで実施)
+- detect_faces / detect_labels(Person) / detect_moderation_labels
+- 該当時: ジョブ failed、フロントに日本語エラーメッセージ
+
+### テキストガードレール (Bedrock Guardrails)
+- 2箇所: register Lambda (initial_info) + add_info Lambda (text)
+- ApplyGuardrail API (スタンドアロン、モデル呼び出し不要)
+- Standard Tier + クロスリージョン推論 (APACプロファイル)
+- CDK CfnGuardrail で管理 (デプロイ時自動作成)
+- コンテンツフィルター: HATE/INSULTS/SEXUAL/VIOLENCE/MISCONDUCT
+- NG時: 400エラー → フロントでインラインエラー表示 (やり直し可)
+- 未設定時 (GUARDRAIL_ID空): スキップ (可用性優先)
+- API呼び出し失敗時: パスさせる (可用性優先)
+
 ## 判定ロジック (現在の値)
 
 - sim = 1 − cosine distance
@@ -84,6 +110,10 @@
 - **黄**: sim >= 0.72 かつ votes >= 2
 - **赤**: それ以外 → 新規登録導線
 - votes: top-k内のtop1_id出現数 (判定に使用)
+
+### ゴーストベクトル防御 (search Lambda)
+- S3 Vectors にベクトルが残っていても DynamoDB にレコードがなければ red に降格
+- リセット後の eventual consistency によるゴースト表示を防止
 
 ## 画像処理パイプライン
 
@@ -100,6 +130,14 @@
 - Titan Multimodal Embeddings (us-east-1)
 - 4方向回転 (0, 90, 180, 270)
 - CLAHE 適用後の画像を入力
+
+### BBox検出 (detection.py)
+- **主方式**: tool use (constrained decoding)
+  - DetectObjects ツールスキーマで `boxes: [[int, int, int, int], ...]` を強制
+  - toolChoice で強制呼び出し
+  - 不正JSON出力が原理的に発生しない
+- **フォールバック**: プロンプトベース + repair_boxes パーサー
+  - JSONパース → 正規表現 → フラット数列救済 の3段階
 
 ## デプロイ
 
@@ -122,5 +160,7 @@
 
 ### データリセット Lambda (reset_data)
 - 用途: S3 Vectors インデックス + DynamoDB (Objects/Jobs) を全削除
+- S3 バケット内のファイル (uploads/, crops/, thumbnails/) は削除しない
 - 安全装置: `{"confirm": true}` を payload に渡さないと実行しない
+- 注意: S3 Vectors の削除は eventually consistent。削除直後はクエリで古い結果が返る場合がある
 - 実行方法: `aws lambda invoke --function-name <FN> --payload '{"confirm":true}' out.json`
