@@ -151,6 +151,16 @@ def print_accuracy_report(
         print(f"top-k Jaccard係数 (最小): {min(jaccard_scores):.4f}")
         print(f"top-k Jaccard係数 (最大): {max(jaccard_scores):.4f}")
 
+    # verdict 内訳
+    s3v_verdicts = {"green": 0, "yellow": 0, "red": 0}
+    ddb_verdicts = {"green": 0, "yellow": 0, "red": 0}
+    for r in results:
+        s3v_verdicts[r["s3v_verdict"]] = s3v_verdicts.get(r["s3v_verdict"], 0) + 1
+        ddb_verdicts[r["ddb_verdict"]] = ddb_verdicts.get(r["ddb_verdict"], 0) + 1
+    print(f"\n--- verdict 内訳 ---")
+    print(f"  S3V:  green={s3v_verdicts['green']}, yellow={s3v_verdicts['yellow']}, red={s3v_verdicts['red']}")
+    print(f"  DDB:  green={ddb_verdicts['green']}, yellow={ddb_verdicts['yellow']}, red={ddb_verdicts['red']}")
+
     # 不一致の詳細
     mismatches = [r for r in results if r["s3v_verdict"] != r["ddb_verdict"]]
     if mismatches:
@@ -161,6 +171,12 @@ def print_accuracy_report(
             )
         if len(mismatches) > 10:
             print(f"  ... 他 {len(mismatches) - 10}件")
+
+    # 各クエリの詳細
+    print(f"\n--- クエリ別結果 ---")
+    for r in results:
+        match_icon = "✓" if r["s3v_verdict"] == r["ddb_verdict"] else "✗"
+        print(f"  [{match_icon}] {r['query_id']}: S3V={r['s3v_verdict']}, DDB={r['ddb_verdict']}, object_id={r.get('s3v_object_id', '-')}")
 
 
 def print_cost_estimate(
