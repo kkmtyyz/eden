@@ -79,7 +79,7 @@ def create_table(
                 {
                     "IndexName": index_name,
                     "Dimensions": vector_dim,
-                    "VectorAttribute": {"AttributeName": "vector", "VectorAttributeType": "FLOAT32"},
+                    "VectorAttribute": {"AttributeName": "vector"},
                     "DistanceFunction": "COSINE",
                     "Projection": {"ProjectionType": "ALL"},
                 }
