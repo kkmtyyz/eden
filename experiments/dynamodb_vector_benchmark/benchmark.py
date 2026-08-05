@@ -376,17 +376,21 @@ def main():
 
     from .settings import aws_profile, ddb_table, ddb_index
 
+    from .settings import iterations as cfg_iterations
+
     # CLI引数 > config.yaml > デフォルト
     profile = args.profile or aws_profile()
     table_name = args.table_name if args.table_name != DDB_TABLE_NAME else ddb_table()
     index_name = args.index_name if args.index_name != DDB_INDEX_NAME else ddb_index()
+    # iterations: CLI で明示指定されていなければ config.yaml を使う
+    iters = args.iterations if args.iterations != 10 else cfg_iterations()
 
     session = boto3.Session(profile_name=profile) if profile else boto3.Session()
 
     # ベンチマーク実行
     results = run_benchmark(
         args.query_dir,
-        iterations=args.iterations,
+        iterations=iters,
         warmup=not args.no_warmup,
         session=session,
         table_name=table_name,
