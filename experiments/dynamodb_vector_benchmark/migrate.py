@@ -78,10 +78,10 @@ def create_table(
             VectorIndexes=[
                 {
                     "IndexName": index_name,
-                    "Dimension": vector_dim,
-                    "VectorAttribute": "vector",
-                    "DistanceMetric": "cosine",
-                    "ProjectionType": "ALL",
+                    "Dimensions": vector_dim,
+                    "VectorAttribute": {"AttributeName": "vector", "VectorAttributeType": "FLOAT32"},
+                    "DistanceFunction": "COSINE",
+                    "Projection": {"ProjectionType": "ALL"},
                 }
             ],
         )
