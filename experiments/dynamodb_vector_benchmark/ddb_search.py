@@ -149,7 +149,7 @@ def query_vectors_ddb(
     resp = client.search_vectors(
         TableName=table_name,
         IndexName=index_name,
-        SearchVector=vector,
+        SearchVector=[{"N": str(v)} for v in vector],
         TopK=top_k,
     )
 
