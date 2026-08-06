@@ -11,7 +11,6 @@ import * as sqs from "aws-cdk-lib/aws-sqs";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as cognito from "aws-cdk-lib/aws-cognito";
 // [S3V_DISABLED] import * as s3vectors from "aws-cdk-lib/aws-s3vectors";
-import * as cr from "aws-cdk-lib/custom-resources";
 import * as bedrock from "aws-cdk-lib/aws-bedrock";
 import * as lambdaEventSources from "aws-cdk-lib/aws-lambda-event-sources";
 
@@ -67,62 +66,10 @@ export class ApiStack extends Construct {
     });
 
     // ─── DynamoDB VectorsTable (ベクトル検索) ───────────────────
-    // CloudFormation は VectorIndexes プロパティ未対応のため、
-    // テーブルのみ CfnTable で作成し、VectorIndex は Custom Resource (UpdateTable API) で追加する
-    const vectorsTable = new dynamodb.CfnTable(this, "VectorsTable", {
-      attributeDefinitions: [
-        { attributeName: "vector_id", attributeType: "S" },
-      ],
-      keySchema: [
-        { attributeName: "vector_id", keyType: "HASH" },
-      ],
-      billingMode: "PAY_PER_REQUEST",
-    });
-    vectorsTable.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
-
-    const vectorsTableName = vectorsTable.ref;
-
-    // VectorIndex を UpdateTable API で追加する Custom Resource
-    const addVectorIndex = new cr.AwsCustomResource(this, "AddVectorIndex", {
-      onCreate: {
-        service: "DynamoDB",
-        action: "updateTable",
-        parameters: {
-          TableName: vectorsTableName,
-          VectorIndexes: [
-            {
-              IndexName: "eden-vector-index",
-              Dimensions: 1024,
-              DistanceFunction: "COSINE",
-              VectorAttribute: { AttributeName: "vector" },
-              Projection: { ProjectionType: "ALL" },
-            },
-          ],
-        },
-        physicalResourceId: cr.PhysicalResourceId.of("VectorsTableVectorIndex"),
-      },
-      onDelete: {
-        service: "DynamoDB",
-        action: "updateTable",
-        parameters: {
-          TableName: vectorsTableName,
-          VectorIndexUpdates: [
-            {
-              Delete: {
-                IndexName: "eden-vector-index",
-              },
-            },
-          ],
-        },
-      },
-      policy: cr.AwsCustomResourcePolicy.fromStatements([
-        new iam.PolicyStatement({
-          actions: ["dynamodb:UpdateTable", "dynamodb:DescribeTable"],
-          resources: [cdk.Fn.getAtt(vectorsTable.logicalId, "Arn").toString()],
-        }),
-      ]),
-    });
-    addVectorIndex.node.addDependency(vectorsTable);
+    // CloudFormation/CDK は VectorIndexes 未対応のため、テーブル作成は migrate_vectors Lambda で行う。
+    // ここではテーブル名のみ定義し、環境変数として各 Lambda に渡す。
+    const vectorsTableName = `eden-vectors-${cdk.Fn.select(0, cdk.Fn.split("-", cdk.Fn.select(2, cdk.Fn.split("/", cdk.Aws.STACK_ID))))}`;
+    const vectorsTableArn = `arn:aws:dynamodb:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:table/${vectorsTableName}`;
 
     // [S3V_DISABLED] DynamoDB Vector Search に移行 (2026-08-05)
 
@@ -239,7 +186,7 @@ export class ApiStack extends Construct {
         JOBS_TABLE: jobsTable.tableName,
         IMAGE_BUCKET: imageBucket.bucketName,
         REGISTER_QUEUE_URL: registerQueue.queueUrl,
-        EDEN_VECTORS_TABLE: vectorsTable.ref,
+        EDEN_VECTORS_TABLE: vectorsTableName,
         EDEN_TEXT_GUARDRAIL_ID: textGuardrail.attrGuardrailId,
         EDEN_TEXT_GUARDRAIL_VERSION: textGuardrail.attrVersion,
         EDEN_TEXT_GUARDRAIL_REGION: cdk.Aws.REGION,
@@ -411,7 +358,7 @@ export class ApiStack extends Construct {
         "dynamodb:Scan",
       ],
       resources: [
-        cdk.Fn.getAtt(vectorsTable.logicalId, "Arn").toString(),
+        vectorsTableArn,
       ],
     });
     const vectorsSearchPolicy = new iam.PolicyStatement({
@@ -419,7 +366,7 @@ export class ApiStack extends Construct {
         "dynamodb:SearchVectors",
       ],
       resources: [
-        `${cdk.Fn.getAtt(vectorsTable.logicalId, "Arn").toString()}/index/eden-vector-index`,
+        `${vectorsTableArn}/index/eden-vector-index`,
       ],
     });
     registerWorkerFn.addToRolePolicy(vectorsTablePolicy);
@@ -438,6 +385,17 @@ export class ApiStack extends Construct {
       resources: ["*"],
     });
     migrateVectorsFn.addToRolePolicy(s3VectorsReadPolicy);
+
+    // DynamoDB テーブル作成権限 (移行Lambda用)
+    const ddbCreateTablePolicy = new iam.PolicyStatement({
+      actions: [
+        "dynamodb:CreateTable",
+        "dynamodb:DescribeTable",
+        "dynamodb:UpdateTable",
+      ],
+      resources: [vectorsTableArn],
+    });
+    migrateVectorsFn.addToRolePolicy(ddbCreateTablePolicy);
 
     // [S3V_DISABLED] DynamoDB Vector Search に移行 (2026-08-05)
     // 将来ベクトルストアを切り替える場合に再利用可能
