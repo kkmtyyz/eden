@@ -1,5 +1,5 @@
 <!-- このファイルはKiroのsteering用ドキュメントです。開発時に参照してください。 -->
-<!-- 最終更新: 2026-08-06 (kiro/dev ブランチの実装に基づく) -->
+<!-- 最終更新: 2026-08-06 (kiro/dev ブランチの実装に基づく, DynamoDB Vector Search 移行完了) -->
 
 # 機能別整理
 
@@ -144,7 +144,7 @@
 eden/
 ├── __init__.py
 ├── config.py          # 閾値・定数・環境変数オーバーライド
-├── clients.py         # boto3クライアント生成ヘルパー
+├── clients.py         # boto3クライアント生成ヘルパー (get_dynamodb_client 等)
 ├── detection.py       # BBox検出 (Nova Lite, tool use + フォールバック)
 ├── crop.py            # クロップ (余白6%)、中央物体選択
 ├── ocr.py             # 文字抽出 (Nova Lite)、正規化
@@ -167,6 +167,7 @@ eden/
 | EMBED_DIM | 1024 | EDEN_EMBED_DIM |
 | TOP_K | 20 | EDEN_TOP_K |
 | VECTORS_TABLE | eden-vectors | EDEN_VECTORS_TABLE |
+| VECTOR_REGION | ap-northeast-1 | EDEN_VECTOR_REGION |
 | ROTATIONS | [0,90,180,270] | — |
 | TEXT_GUARDRAIL_ID | (空) | EDEN_TEXT_GUARDRAIL_ID |
 | TEXT_GUARDRAIL_VERSION | 1 | EDEN_TEXT_GUARDRAIL_VERSION |
@@ -174,10 +175,10 @@ eden/
 
 ## モデル乗り換え運用 (blue/green)
 
-1. 新インデックス作成 (次元は新モデルに合わせる)
-2. S3保存済みクロップからバッチ再埋め込み → 新インデックスへ
+1. 新 VectorIndex 作成 (次元は新モデルに合わせる)
+2. S3保存済みクロップからバッチ再埋め込み → 新テーブル/インデックスへ
 3. 評価データセットで 07_evaluate.py を回して閾値再キャリブレーション
-4. 参照先切り替え → 旧インデックス削除
+4. 参照先切り替え → 旧テーブル削除
 
 ## 今後の精度改善候補 (未実装)
 

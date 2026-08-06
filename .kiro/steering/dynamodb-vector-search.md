@@ -1,5 +1,5 @@
 <!-- DynamoDB Vector Search 移行ガイド -->
-<!-- 2026-08-05 GA 当日の検証結果に基づく -->
+<!-- 2026-08-05 GA 当日の検証結果 + 2026-08-06 移行完了に基づく -->
 
 # DynamoDB Vector Search 移行ガイド
 
@@ -114,11 +114,42 @@ resp = client.search_vectors(
 
 eden の既存ロジック (`sim = 1 - distance`) に渡すには `distance = Score` でそのまま使う。
 
-## CDK / CloudFormation 対応状況
+## CDK / CloudFormation 対応状況 (2026-08-06 更新)
 
-- GA 当日時点で CDK の L2 コンストラクト (TableV2) は VectorIndexes 未対応
-- CloudFormation の `AWS::DynamoDB::Table` は `VectorIndexes` パラメータをサポート
-- Amplify (CDK) で使う場合は L1 の `CfnTable` で直接指定するか、CustomResource を使う
+- CDK の L2 コンストラクト (TableV2) は VectorIndexes 未対応
+- **CloudFormation の `AWS::DynamoDB::Table` も `VectorIndexes` プロパティ未対応** (GA 直後のため)
+- `CfnTable` の `addPropertyOverride("VectorIndexes", ...)` も CloudFormation バリデーションで拒否される
+- `AwsCustomResource` で `UpdateTable` API を呼ぶ方法も、DynamoDB API 側が `VectorIndexes` を `UpdateTable` のパラメータとして認識しないため失敗する
+
+### 現在の対応策 (Eden での実装)
+
+**CDK/CloudFormation 外でテーブルを管理する:**
+1. CDK ではテーブル名の文字列と ARN のみ定義（IAM ポリシー用）
+2. `migrate_vectors` Lambda で `create_table` API を直接呼び出してテーブル+VectorIndex を作成
+3. 初回デプロイ後に手動で Lambda を invoke する
+
+```python
+# Lambda 内で直接 create_table を呼ぶ (唯一の方法)
+ddb_client.create_table(
+    TableName=VECTORS_TABLE,
+    AttributeDefinitions=[...],
+    KeySchema=[...],
+    BillingMode="PAY_PER_REQUEST",
+    VectorIndexes=[{
+        "IndexName": "eden-vector-index",
+        "Dimensions": 1024,
+        "DistanceFunction": "COSINE",
+        "VectorAttribute": {"AttributeName": "vector"},
+        "Projection": {"ProjectionType": "ALL"},
+    }],
+)
+```
+
+### ゼロからデプロイする場合の手順
+
+1. `npx ampx pipeline-deploy` (Lambda 関数がデプロイされる)
+2. `migrate_vectors` Lambda を invoke: `{"confirm": true, "mode": "create-table"}`
+3. S3V からデータ移行する場合: `{"confirm": true, "mode": "migrate"}`
 
 ## テーブル設計 (Eden 移行時の方針)
 

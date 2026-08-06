@@ -1,5 +1,5 @@
 <!-- このファイルはKiroのsteering用ドキュメントです。開発時に参照してください。 -->
-<!-- 最終更新: 2026-08-06 (kiro/dev ブランチの実装に基づく) -->
+<!-- 最終更新: 2026-08-06 (kiro/dev ブランチの実装に基づく, DynamoDB Vector Search 移行完了) -->
 
 # 構成整理
 
@@ -18,9 +18,10 @@
 │        ├─ API Gateway REST + Cognitoオーソライザー            │
 │        ├─ Lambda群 (Python 3.12, eden Layer)                 │
 │        ├─ SQS (登録ジョブキュー, visibilityTimeout=15min)    │
-│        ├─ DynamoDB (物体テーブル + ジョブテーブル +           │
-│        │           VectorsTable w/ VectorIndex)               │
+│        ├─ DynamoDB (物体テーブル + ジョブテーブル)            │
+│        ├─ DynamoDB VectorsTable (CDK外管理, Lambda で作成)    │
 │        ├─ S3 (画像バケット, CORS: PUT/GET/HEAD)              │
+│        ├─ S3 Vectors (移行完了後削除予定, RETAIN)            │
 │        └─ Bedrock Guardrails (テキストガードレール, CDK管理)  │
 │                                                              │
 │  addOutput({custom: {apiEndpoint}})                          │
@@ -28,12 +29,18 @@
 └──────────────────────────────────────────────┘
 ```
 
-### 外部リソース (全て CDK 管理)
+### 外部リソース
 - **DynamoDB VectorsTable**: 東京 (ベクトル検索)
+  - テーブル名: `eden-vectors-{stackIdShortHash}` (CDK で名前のみ定義、テーブル自体は migrate_vectors Lambda で作成)
   - PK: vector_id (String)。形式: `{object_id}##{source_file}##{rotation}`
   - VectorIndex: eden-vector-index (1024次元, COSINE, Projection=ALL)
   - 属性: vector_id, object_id, source_file, rotation, vector (L of N), text_tokens (SS, optional)
-  - CfnTable (L1) で定義 (L2 が VectorIndexes 未対応のため)
+  - **CloudFormation/CDK は VectorIndexes プロパティ未対応**のため、テーブル作成は DynamoDB API (create_table) で直接行う
+- **S3 Vectors** (移行完了後に削除予定): 東京 (cosine / 1024次元 / float32)
+  - バケット名: `eden-vec-{stackIdShortHash}`
+  - インデックス名: `eden-index`
+  - CDK で CfnVectorBucket/CfnIndex として定義 (RemovalPolicy.RETAIN)
+  - 移行 Lambda がデータを読み取るために維持。完全移行確認後に手動削除する
 - **Bedrock Nova Lite**: 東京 (BBox検出・文字抽出)
   - BBox検出: tool use (constrained decoding) で構造化出力
   - フォールバック: プロンプトベース + repair_boxes パーサー
@@ -51,12 +58,14 @@
 | POST /upload-url | 同期 | presigned PUT URL 発行 (S3v4署名, リージョン明示) |
 | POST /download-url | 同期 | presigned GET URL 発行 (サムネイル/画像取得用) |
 | POST /bbox-candidates | 同期 | 代表フレームにNova (tool use) → BBox候補返却 |
-| POST /register | 同期(202) | テキストガードレール → SQSへ投入、job_id返却。keys[], representative_key, box, object_id, initial_info を受付 |
+| POST /register | 同期(202) | テキストガードレール → SQSへ投入、job_id返却 |
 | (SQS trigger) | 非同期 | ガードレール→追跡(4並列)→選定→OCR+埋め込み(4並列)→DynamoDB VectorsTable登録 |
 | GET /jobs/{id} | 同期 | ジョブ状態返却 (pending/processing/completed/failed) |
 | POST /search | 同期 | BBox検出(tool use)→上位10個をasyncio並列→DynamoDB SearchVectors→3値判定→ゴースト防御→情報付き返却 |
 | POST /objects/{id}/info | 同期 | テキストガードレール → DynamoDB info に追記 (upsert方式) |
-| (手動invoke) reset_data | — | 運用ツール: DynamoDB VectorsTable + Objects/Jobs テーブルを全削除 |
+| (手動invoke) reset_data | — | 運用ツール: S3 Vectors + DynamoDB VectorsTable + Objects/Jobs を全削除 |
+| (手動invoke) reset_data_ddb | — | 運用ツール: DynamoDB VectorsTable + Objects/Jobs を全削除 (S3 Vectors は残す) |
+| (手動invoke) migrate_vectors | — | 運用ツール: ベクトル移行 (3モード: restore/migrate/create-table) |
 
 ### 設計判断
 - Step Functions見送り (検索29秒内、登録SQS+Lambda15分で足りる)
@@ -64,6 +73,7 @@
 - API Gateway REST (Cognitoオーソライザーの相性が良い)
 - BBox検出: tool use (constrained decoding) を使用。フォールバックとしてプロンプトベース+JSONパーサー
 - DynamoDB Vector Search: S3 Vectors から移行 (P50 -26%、精度100%一致のベンチマーク結果に基づく)
+- VectorsTable は CDK/CloudFormation 外で管理 (VectorIndexes 未対応のため Lambda で create_table API を直接呼出)
 
 ## データストア
 
@@ -85,6 +95,12 @@
 - 書き込み: BatchWriteItem (25件バッチ)、UnprocessedItems リトライ
 - 検索: search_vectors API (SearchVector=[{"N": str(v)}], TopK=20)
 - 削除: Scan + BatchWriteItem DeleteRequest (25件バッチ)
+
+### S3 Vectors (移行完了後削除予定)
+- dimension: 1024, cosine, float32
+- バケット名: `eden-vec-{stackIdShortHash}`
+- インデックス名: `eden-index`
+- CDK で RETAIN ポリシーで定義中 (migrate_vectors Lambda がデータを読み取るために維持)
 
 ### DynamoDB (その他)
 - **物体テーブル**: PK=object_id, thumbnail_key, info: [{text, user_id, created_at}]
@@ -164,10 +180,38 @@
 ### sandbox (開発用)
 - `npx ampx sandbox` でローカル開発
 
+### 初回デプロイ手順 (DynamoDB VectorsTable)
+1. Amplify デプロイ (Lambda 関数が作成される)
+2. `migrate_vectors` Lambda を invoke:
+   - テーブル作成 + S3V からデータ移行: `{"confirm": true, "mode": "migrate"}`
+   - テーブル作成のみ: `{"confirm": true, "mode": "create-table"}`
+
 ## 運用ツール
 
 ### データリセット Lambda (reset_data)
-- 用途: DynamoDB VectorsTable + Objects/Jobs テーブルを全削除
+- 用途: S3 Vectors + DynamoDB VectorsTable + Objects/Jobs テーブルを全削除
 - S3 バケット内のファイル (uploads/, crops/, thumbnails/) は削除しない
 - 安全装置: `{"confirm": true}` を payload に渡さないと実行しない
 - 実行方法: `aws lambda invoke --function-name <FN> --payload '{"confirm":true}' out.json`
+
+### DynamoDB版リセット Lambda (reset_data_ddb)
+- 用途: DynamoDB VectorsTable + Objects/Jobs テーブルを全削除 (S3 Vectors は残す)
+- 安全装置: `{"confirm": true}` を payload に渡さないと実行しない
+
+### ベクトル移行 Lambda (migrate_vectors)
+- 3つのモードをサポート:
+  - `"mode": "restore"` — DynamoDB → S3 Vectors へベクトル復元
+    - `source_table` パラメータで読み込み元テーブルを指定 (デフォルト: eden-vector-benchmark)
+  - `"mode": "migrate"` — S3 Vectors → DynamoDB VectorsTable へ移行 (テーブル作成込み)
+  - `"mode": "create-table"` — DynamoDB VectorsTable の作成のみ
+- 安全装置: `{"confirm": true}` を payload に渡さないと実行しない
+- タイムアウト: 15分、メモリ: 1024MB
+- 実行例:
+  ```bash
+  # S3V復元 (DDB→S3V)
+  aws lambda invoke --function-name <FN> --payload '{"confirm":true,"mode":"restore","source_table":"eden-vector-benchmark"}' out.json
+  # DDB移行 (S3V→DDB, テーブル作成込み)
+  aws lambda invoke --function-name <FN> --payload '{"confirm":true,"mode":"migrate"}' out.json
+  # テーブル作成のみ
+  aws lambda invoke --function-name <FN> --payload '{"confirm":true,"mode":"create-table"}' out.json
+  ```
