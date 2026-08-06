@@ -10,7 +10,7 @@ import * as s3 from "aws-cdk-lib/aws-s3";
 import * as sqs from "aws-cdk-lib/aws-sqs";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as cognito from "aws-cdk-lib/aws-cognito";
-// [S3V_DISABLED] import * as s3vectors from "aws-cdk-lib/aws-s3vectors";
+import * as s3vectors from "aws-cdk-lib/aws-s3vectors";
 import * as bedrock from "aws-cdk-lib/aws-bedrock";
 import * as lambdaEventSources from "aws-cdk-lib/aws-lambda-event-sources";
 
@@ -71,33 +71,30 @@ export class ApiStack extends Construct {
     const vectorsTableName = `eden-vectors-${cdk.Fn.select(0, cdk.Fn.split("-", cdk.Fn.select(2, cdk.Fn.split("/", cdk.Aws.STACK_ID))))}`;
     const vectorsTableArn = `arn:aws:dynamodb:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:table/${vectorsTableName}`;
 
-    // [S3V_DISABLED] DynamoDB Vector Search に移行 (2026-08-05)
-
-    // 将来ベクトルストアを切り替える場合に再利用可能
-    // ---
-    // S3 Vectors バケット名 (移行Lambda用に参照を残す)
+    // ─── S3 Vectors (移行完了後に削除予定) ─────────────────────
+    // DynamoDB Vector Search への移行完了後に CfnVectorBucket / CfnIndex を削除する。
+    // 移行 Lambda が S3 Vectors からデータを読み取るため、移行完了まで維持する。
     const stackId = cdk.Fn.select(2, cdk.Fn.split("/", cdk.Aws.STACK_ID));
     const shortHash = cdk.Fn.select(0, cdk.Fn.split("-", stackId));
     const vectorBucketName = `eden-vec-${shortHash}`;
-    //
-    // const vectorBucket = new s3vectors.CfnVectorBucket(this, "VectorBucket", {
-    //   vectorBucketName,
-    // });
-    // vectorBucket.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
-    //
-    // const vectorIndex = new s3vectors.CfnIndex(this, "VectorIndex", {
-    //   vectorBucketName,
-    //   indexName: "eden-index",
-    //   dataType: "float32",
-    //   dimension: 1024,
-    //   distanceMetric: "cosine",
-    //   metadataConfiguration: {
-    //     nonFilterableMetadataKeys: ["label", "source_file", "rotation"],
-    //   },
-    // });
-    // vectorIndex.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
-    // vectorIndex.addDependency(vectorBucket);
-    // ---
+
+    const vectorBucket = new s3vectors.CfnVectorBucket(this, "VectorBucket", {
+      vectorBucketName,
+    });
+    vectorBucket.applyRemovalPolicy(cdk.RemovalPolicy.RETAIN);
+
+    const vectorIndex = new s3vectors.CfnIndex(this, "VectorIndex", {
+      vectorBucketName,
+      indexName: "eden-index",
+      dataType: "float32",
+      dimension: 1024,
+      distanceMetric: "cosine",
+      metadataConfiguration: {
+        nonFilterableMetadataKeys: ["label", "source_file", "rotation"],
+      },
+    });
+    vectorIndex.applyRemovalPolicy(cdk.RemovalPolicy.RETAIN);
+    vectorIndex.addDependency(vectorBucket);
 
     // ─── Bedrock Guardrails (テキストガードレール) ──────────────────
     // ガードレールプロファイルARNを組み立て (APACリージョン用)
