@@ -89,9 +89,10 @@ export class ApiStack extends Construct {
     // [S3V_DISABLED] DynamoDB Vector Search に移行 (2026-08-05)
     // 将来ベクトルストアを切り替える場合に再利用可能
     // ---
-    // const stackId = cdk.Fn.select(2, cdk.Fn.split("/", cdk.Aws.STACK_ID));
-    // const shortHash = cdk.Fn.select(0, cdk.Fn.split("-", stackId));
-    // const vectorBucketName = `eden-vec-${shortHash}`;
+    // S3 Vectors バケット名 (移行Lambda用に参照を残す)
+    const stackId = cdk.Fn.select(2, cdk.Fn.split("/", cdk.Aws.STACK_ID));
+    const shortHash = cdk.Fn.select(0, cdk.Fn.split("-", stackId));
+    const vectorBucketName = `eden-vec-${shortHash}`;
     //
     // const vectorBucket = new s3vectors.CfnVectorBucket(this, "VectorBucket", {
     //   vectorBucketName,
@@ -275,6 +276,31 @@ export class ApiStack extends Construct {
       description: "運用ツール: DynamoDB VectorsTable + DynamoDB を空にする",
     } as lambda.FunctionProps);
 
+    // ─── 運用ツール: DynamoDB版リセット Lambda ────────────────────
+    const resetDataDdbFn = new lambda.Function(this, "ResetDataDdbFn", {
+      ...commonLambdaProps,
+      handler: "handler.handler",
+      code: lambda.Code.fromAsset(path.join(functionsDir, "reset_data_ddb")),
+      timeout: cdk.Duration.minutes(5),
+      memorySize: 512,
+      description: "運用ツール: DynamoDB VectorsTable + Objects/Jobs を空にする (S3 Vectors は残す)",
+    } as lambda.FunctionProps);
+
+    // ─── 運用ツール: S3V → DynamoDB 移行 Lambda ──────────────────
+    const migrateVectorsFn = new lambda.Function(this, "MigrateVectorsFn", {
+      ...commonLambdaProps,
+      handler: "handler.handler",
+      code: lambda.Code.fromAsset(path.join(functionsDir, "migrate_vectors")),
+      timeout: cdk.Duration.minutes(15),
+      memorySize: 1024,
+      description: "運用ツール: S3 Vectors → DynamoDB VectorsTable へデータ移行",
+      environment: {
+        ...commonLambdaProps.environment,
+        EDEN_VECTOR_BUCKET: vectorBucketName,
+        EDEN_VECTOR_INDEX: "eden-index",
+      },
+    } as lambda.FunctionProps);
+
     // ─── SQS Trigger ──────────────────────────────────────────────
     registerWorkerFn.addEventSource(
       new lambdaEventSources.SqsEventSource(registerQueue, {
@@ -287,10 +313,12 @@ export class ApiStack extends Construct {
     objectsTable.grantReadWriteData(registerWorkerFn);
     objectsTable.grantReadWriteData(addInfoFn);
     objectsTable.grantReadWriteData(resetDataFn);
+    objectsTable.grantReadWriteData(resetDataDdbFn);
     objectsTable.grantReadData(searchFn);
     jobsTable.grantReadWriteData(registerFn);
     jobsTable.grantReadWriteData(registerWorkerFn);
     jobsTable.grantReadWriteData(resetDataFn);
+    jobsTable.grantReadWriteData(resetDataDdbFn);
     jobsTable.grantReadData(jobStatusFn);
 
     // S3
@@ -358,6 +386,19 @@ export class ApiStack extends Construct {
     registerWorkerFn.addToRolePolicy(vectorsTablePolicy);
     searchFn.addToRolePolicy(vectorsSearchPolicy);
     resetDataFn.addToRolePolicy(vectorsTablePolicy);
+    resetDataDdbFn.addToRolePolicy(vectorsTablePolicy);
+    migrateVectorsFn.addToRolePolicy(vectorsTablePolicy);
+
+    // S3 Vectors (移行Lambda用: 読み取りのみ)
+    const s3VectorsReadPolicy = new iam.PolicyStatement({
+      actions: [
+        "s3vectors:ListVectors",
+        "s3vectors:GetVectors",
+        "s3vectors:QueryVectors",
+      ],
+      resources: ["*"],
+    });
+    migrateVectorsFn.addToRolePolicy(s3VectorsReadPolicy);
 
     // [S3V_DISABLED] DynamoDB Vector Search に移行 (2026-08-05)
     // 将来ベクトルストアを切り替える場合に再利用可能
