@@ -11,6 +11,7 @@ import * as sqs from "aws-cdk-lib/aws-sqs";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as cognito from "aws-cdk-lib/aws-cognito";
 // [S3V_DISABLED] import * as s3vectors from "aws-cdk-lib/aws-s3vectors";
+import * as cr from "aws-cdk-lib/custom-resources";
 import * as bedrock from "aws-cdk-lib/aws-bedrock";
 import * as lambdaEventSources from "aws-cdk-lib/aws-lambda-event-sources";
 
@@ -66,6 +67,8 @@ export class ApiStack extends Construct {
     });
 
     // ─── DynamoDB VectorsTable (ベクトル検索) ───────────────────
+    // CloudFormation は VectorIndexes プロパティ未対応のため、
+    // テーブルのみ CfnTable で作成し、VectorIndex は Custom Resource (UpdateTable API) で追加する
     const vectorsTable = new dynamodb.CfnTable(this, "VectorsTable", {
       attributeDefinitions: [
         { attributeName: "vector_id", attributeType: "S" },
@@ -75,17 +78,51 @@ export class ApiStack extends Construct {
       ],
       billingMode: "PAY_PER_REQUEST",
     });
-    // VectorIndexes は CfnTableProps の型定義に未対応のため addPropertyOverride で追加
-    vectorsTable.addPropertyOverride("VectorIndexes", [
-      {
-        IndexName: "eden-vector-index",
-        Dimensions: 1024,
-        DistanceFunction: "COSINE",
-        VectorAttribute: { AttributeName: "vector" },
-        Projection: { ProjectionType: "ALL" },
-      },
-    ]);
     vectorsTable.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+
+    const vectorsTableName = vectorsTable.ref;
+
+    // VectorIndex を UpdateTable API で追加する Custom Resource
+    const addVectorIndex = new cr.AwsCustomResource(this, "AddVectorIndex", {
+      onCreate: {
+        service: "DynamoDB",
+        action: "updateTable",
+        parameters: {
+          TableName: vectorsTableName,
+          VectorIndexes: [
+            {
+              IndexName: "eden-vector-index",
+              Dimensions: 1024,
+              DistanceFunction: "COSINE",
+              VectorAttribute: { AttributeName: "vector" },
+              Projection: { ProjectionType: "ALL" },
+            },
+          ],
+        },
+        physicalResourceId: cr.PhysicalResourceId.of("VectorsTableVectorIndex"),
+      },
+      onDelete: {
+        service: "DynamoDB",
+        action: "updateTable",
+        parameters: {
+          TableName: vectorsTableName,
+          VectorIndexUpdates: [
+            {
+              Delete: {
+                IndexName: "eden-vector-index",
+              },
+            },
+          ],
+        },
+      },
+      policy: cr.AwsCustomResourcePolicy.fromStatements([
+        new iam.PolicyStatement({
+          actions: ["dynamodb:UpdateTable", "dynamodb:DescribeTable"],
+          resources: [cdk.Fn.getAtt(vectorsTable.logicalId, "Arn").toString()],
+        }),
+      ]),
+    });
+    addVectorIndex.node.addDependency(vectorsTable);
 
     // [S3V_DISABLED] DynamoDB Vector Search に移行 (2026-08-05)
 
