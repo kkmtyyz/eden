@@ -372,16 +372,17 @@ export class ApiStack extends Construct {
     resetDataDdbFn.addToRolePolicy(vectorsTablePolicy);
     migrateVectorsFn.addToRolePolicy(vectorsTablePolicy);
 
-    // S3 Vectors (移行Lambda用: 読み取りのみ)
-    const s3VectorsReadPolicy = new iam.PolicyStatement({
+    // S3 Vectors (移行Lambda用: 読み書き)
+    const s3VectorsMigratePolicy = new iam.PolicyStatement({
       actions: [
         "s3vectors:ListVectors",
         "s3vectors:GetVectors",
         "s3vectors:QueryVectors",
+        "s3vectors:PutVectors",
       ],
       resources: ["*"],
     });
-    migrateVectorsFn.addToRolePolicy(s3VectorsReadPolicy);
+    migrateVectorsFn.addToRolePolicy(s3VectorsMigratePolicy);
 
     // DynamoDB テーブル作成権限 (移行Lambda用)
     const ddbCreateTablePolicy = new iam.PolicyStatement({
@@ -394,6 +395,13 @@ export class ApiStack extends Construct {
     });
     migrateVectorsFn.addToRolePolicy(ddbCreateTablePolicy);
 
+    // DynamoDB 全テーブル Scan 権限 (restore モードで任意テーブルからデータ読み取り)
+    const ddbScanAnyPolicy = new iam.PolicyStatement({
+      actions: ["dynamodb:Scan"],
+      resources: [`arn:aws:dynamodb:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:table/*`],
+    });
+    migrateVectorsFn.addToRolePolicy(ddbScanAnyPolicy);
+
     // [S3V_DISABLED] DynamoDB Vector Search に移行 (2026-08-05)
     // 将来ベクトルストアを切り替える場合に再利用可能
     // ---
@@ -401,6 +409,7 @@ export class ApiStack extends Construct {
     //   actions: [
     //     "s3vectors:PutVectors",
     //     "s3vectors:QueryVectors",
+        "s3vectors:PutVectors",
     //     "s3vectors:GetVectors",
     //     "s3vectors:DeleteVectors",
     //     "s3vectors:ListVectors",
