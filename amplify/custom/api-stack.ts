@@ -74,19 +74,21 @@ export class ApiStack extends Construct {
         { attributeName: "vector_id", keyType: "HASH" },
       ],
       billingMode: "PAY_PER_REQUEST",
-      vectorIndexes: [
-        {
-          indexName: "eden-vector-index",
-          dimensions: 1024,
-          distanceFunction: "COSINE",
-          vectorAttribute: { attributeName: "vector" },
-          projection: { projectionType: "ALL" },
-        },
-      ],
     });
+    // VectorIndexes は CfnTableProps の型定義に未対応のため addPropertyOverride で追加
+    vectorsTable.addPropertyOverride("VectorIndexes", [
+      {
+        IndexName: "eden-vector-index",
+        Dimensions: 1024,
+        DistanceFunction: "COSINE",
+        VectorAttribute: { AttributeName: "vector" },
+        Projection: { ProjectionType: "ALL" },
+      },
+    ]);
     vectorsTable.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
 
     // [S3V_DISABLED] DynamoDB Vector Search に移行 (2026-08-05)
+
     // 将来ベクトルストアを切り替える場合に再利用可能
     // ---
     // S3 Vectors バケット名 (移行Lambda用に参照を残す)
