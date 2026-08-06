@@ -36,13 +36,26 @@ def get_bedrock_text_client(
     return s.client("bedrock-runtime", region_name=region or config.TEXT_REGION)
 
 
-def get_s3vectors_client(
+def get_dynamodb_client(
     region: str | None = None,
     session: boto3.Session | None = None,
 ):
-    """S3 Vectors クライアントを返す。"""
+    """DynamoDB 低レベルクライアントを返す (search_vectors 用)。"""
     s = session or boto3.Session()
-    return s.client("s3vectors", region_name=region or config.VECTOR_REGION)
+    return s.client("dynamodb", region_name=region or config.VECTOR_REGION)
+
+
+# [S3V_DISABLED] DynamoDB Vector Search に移行 (2026-08-05)
+# 将来ベクトルストアを切り替える場合に再利用可能
+# ---
+# def get_s3vectors_client(
+#     region: str | None = None,
+#     session: boto3.Session | None = None,
+# ):
+#     """S3 Vectors クライアントを返す。"""
+#     s = session or boto3.Session()
+#     return s.client("s3vectors", region_name=region or config.VECTOR_REGION)
+# ---
 
 
 def get_rekognition_client(

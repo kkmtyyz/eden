@@ -28,7 +28,7 @@ objects_table = dynamodb.Table(OBJECTS_TABLE)
 bedrock_client = boto3.client("bedrock-runtime", region_name=config.BBOX_REGION)
 embed_client = boto3.client("bedrock-runtime", region_name=config.EMBED_REGION)
 text_client = boto3.client("bedrock-runtime", region_name=config.TEXT_REGION)
-s3v_client = boto3.client("s3vectors", region_name=config.VECTOR_REGION)
+s3v_client = boto3.client("dynamodb", region_name=config.VECTOR_REGION)
 
 MAX_CANDIDATES = 10
 
@@ -110,7 +110,7 @@ def _search_single(img: Image.Image, box: list) -> dict:
     result = search_object(
         crop_img,
         embed_client=embed_client,
-        s3v_client=s3v_client,
+        ddb_client=s3v_client,
         text_client=text_client,
     )
     logger.info("[search] BBox検索完了: box=%s, verdict=%s, sim=%.3f, %.1fms",

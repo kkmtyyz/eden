@@ -1,4 +1,4 @@
-"""ベクトル検索: S3 Vectors query + スコア計算 + 3値判定。"""
+"""ベクトル検索: DynamoDB Vector Search query + スコア計算 + 3値判定。"""
 
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
@@ -6,7 +6,7 @@ from difflib import SequenceMatcher
 from PIL import Image
 
 from eden import config
-from eden.clients import get_bedrock_embed_client, get_s3vectors_client
+from eden.clients import get_bedrock_embed_client, get_dynamodb_client
 from eden.crop import crop_center_object
 from eden.embedding import embed_image
 from eden.ocr import extract_text, normalize_text
@@ -59,35 +59,70 @@ def query_vectors(
     *,
     top_k: int | None = None,
     client=None,
-    bucket: str | None = None,
-    index: str | None = None,
+    table_name: str | None = None,
 ) -> list[dict]:
-    """S3 Vectorsにクエリを投げてヒットリストを返す。
+    """DynamoDB SearchVectors でベクトル近傍検索を実行しヒットリストを返す。
 
     Args:
-        vector: クエリベクトル (float32のリスト)
+        vector: クエリベクトル (float32のリスト, 1024次元)
         top_k: 返却件数 (Noneなら config.TOP_K)
-        client: s3vectors クライアント
-        bucket: ベクトルバケット名
-        index: インデックス名
+        client: DynamoDB 低レベルクライアント
+        table_name: VectorsTable のテーブル名
 
     Returns:
         ヒットリスト (distance, metadata付き)
     """
-    client = client or get_s3vectors_client()
+    client = client or get_dynamodb_client()
     top_k = top_k or config.TOP_K
-    bucket = bucket or config.VECTOR_BUCKET
-    index = index or config.VECTOR_INDEX
+    table_name = table_name or config.VECTORS_TABLE
 
-    resp = client.query_vectors(
-        vectorBucketName=bucket,
-        indexName=index,
-        topK=top_k,
-        queryVector={"float32": vector},
-        returnMetadata=True,
-        returnDistance=True,
+    resp = client.search_vectors(
+        TableName=table_name,
+        IndexName="eden-vector-index",
+        SearchVector=[{"N": str(v)} for v in vector],
+        TopK=top_k,
     )
-    return resp.get("vectors", [])
+
+    hits = []
+    for result in resp.get("SearchResults", []):
+        item = result["Item"]
+        hits.append({
+            "distance": result["Score"],
+            "metadata": {
+                "object_id": item["object_id"]["S"],
+                "text_tokens": list(item["text_tokens"]["SS"]) if "text_tokens" in item else [],
+            },
+        })
+    return hits
+
+
+# [S3V_DISABLED] DynamoDB Vector Search に移行 (2026-08-05)
+# 将来ベクトルストアを切り替える場合に再利用可能
+# ---
+# def query_vectors(
+#     vector: list[float],
+#     *,
+#     top_k: int | None = None,
+#     client=None,
+#     bucket: str | None = None,
+#     index: str | None = None,
+# ) -> list[dict]:
+#     """S3 Vectorsにクエリを投げてヒットリストを返す。"""
+#     client = client or get_s3vectors_client()
+#     top_k = top_k or config.TOP_K
+#     bucket = bucket or config.VECTOR_BUCKET
+#     index = index or config.VECTOR_INDEX
+#
+#     resp = client.query_vectors(
+#         vectorBucketName=bucket,
+#         indexName=index,
+#         topK=top_k,
+#         queryVector={"float32": vector},
+#         returnMetadata=True,
+#         returnDistance=True,
+#     )
+#     return resp.get("vectors", [])
+# ---
 
 
 def compute_scores(
@@ -179,7 +214,7 @@ def search_object(
     img: Image.Image,
     *,
     embed_client=None,
-    s3v_client=None,
+    ddb_client=None,
     text_client=None,
 ) -> SearchResult:
     """クロップ済み画像1枚を検索して判定結果を返す。
@@ -187,7 +222,7 @@ def search_object(
     Args:
         img: クロップ済み画像
         embed_client: bedrock-runtime クライアント (Embeddings用)
-        s3v_client: s3vectors クライアント
+        ddb_client: DynamoDB 低レベルクライアント (search_vectors用)
         text_client: bedrock-runtime クライアント (テキスト抽出用)
 
     Returns:
@@ -201,7 +236,7 @@ def search_object(
     vec = embed_image(img, client=embed_client)
 
     # ベクトル検索
-    hits = query_vectors(vec.tolist(), client=s3v_client)
+    hits = query_vectors(vec.tolist(), client=ddb_client)
 
     if not hits:
         return SearchResult(
@@ -235,7 +270,7 @@ def search_image(
     *,
     bbox_client=None,
     embed_client=None,
-    s3v_client=None,
+    ddb_client=None,
     text_client=None,
 ) -> SearchResult:
     """元画像から検索する(クロップ込み)。
@@ -246,7 +281,7 @@ def search_image(
         img: 元画像 (RGB, リサイズ済み推奨)
         bbox_client: bedrock-runtime クライアント (BBox検出用)
         embed_client: bedrock-runtime クライアント (Embeddings用)
-        s3v_client: s3vectors クライアント
+        ddb_client: DynamoDB 低レベルクライアント (search_vectors用)
         text_client: bedrock-runtime クライアント (テキスト抽出用)
 
     Returns:
@@ -256,6 +291,6 @@ def search_image(
     return search_object(
         crop_img,
         embed_client=embed_client,
-        s3v_client=s3v_client,
+        ddb_client=ddb_client,
         text_client=text_client,
     )

@@ -1,5 +1,5 @@
 <!-- このファイルはKiroのsteering用ドキュメントです。開発時に参照してください。 -->
-<!-- 最終更新: 2026-08-05 (kiro/dev ブランチの実装に基づく) -->
+<!-- 最終更新: 2026-08-06 (kiro/dev ブランチの実装に基づく) -->
 
 # 機能別整理
 
@@ -39,9 +39,9 @@
     - VLM(Nova Lite)でクロップ後画像から文字抽出 → NFKC正規化・小文字化・トークン化
     - **CLAHE光正規化** → 4方向回転 → Titan Multimodal Embeddings で1024次元ベクトル化
 14. **Phase 4: 登録**
-    - S3 Vectors に一括登録 (100件バッチ):
-      - filterable: object_id, text_tokens (空なしならキー省略)
-      - non-filterable: label, source_file, rotation
+    - DynamoDB VectorsTable に BatchWriteItem (25件バッチ):
+      - vector_id: `{object_id}##{source_file}##{rotation}`
+      - 属性: object_id, source_file, rotation, vector (L of N), text_tokens (SS, 空なら省略)
     - DynamoDB に物体レコード (object_id, thumbnail_key, info[initial_info])
     - ジョブステータス更新 → completed
 
@@ -53,7 +53,7 @@
 - Phase 1 (BBox追跡 50枚 × 4並列): ~20秒
 - Phase 2 (フレーム選定): ~0秒 (CPU計算のみ)
 - Phase 3 (OCR+埋め込み 20枚 × 4並列): ~25秒
-- Phase 4 (S3 Vectors登録): ~3秒
+- Phase 4 (DynamoDB VectorsTable登録): ~3秒
 - 合計: ~50秒 (並列化前: ~90秒)
 
 ## 物体検索フロー
@@ -64,7 +64,7 @@
 3. 各 BBox を asyncio 並列で処理:
    - crop_bbox (余白6%) でクロップ
    - VLM で文字抽出 (読めなければ空)
-   - **CLAHE光正規化** → Titan でベクトル化 → S3 Vectors で top-20 検索
+   - **CLAHE光正規化** → Titan でベクトル化 → DynamoDB SearchVectors で top-20 検索
 4. スコア計算 (BBoxごと):
    - cosine distance → sim (=1−distance), sim_raw を保持
    - 文字一致ブースト +0.05 / 文字不一致ペナルティ −0.05
@@ -149,7 +149,7 @@ eden/
 ├── crop.py            # クロップ (余白6%)、中央物体選択
 ├── ocr.py             # 文字抽出 (Nova Lite)、正規化
 ├── embedding.py       # Titan Multimodal (4方向回転、CLAHE前処理付き)
-├── search.py          # S3 Vectors query、スコア計算、3値判定
+├── search.py          # DynamoDB SearchVectors query、スコア計算、3値判定
 ├── guardrail.py       # Rekognition (顔/人物/NSFW)
 ├── text_guardrail.py  # Bedrock Guardrails (ApplyGuardrail API, Standard Tier)
 ├── image_util.py      # JPEG変換、EXIF、CLAHE光正規化
@@ -166,6 +166,7 @@ eden/
 | MAX_IMAGE_SIZE | 1024 | EDEN_MAX_IMAGE_SIZE |
 | EMBED_DIM | 1024 | EDEN_EMBED_DIM |
 | TOP_K | 20 | EDEN_TOP_K |
+| VECTORS_TABLE | eden-vectors | EDEN_VECTORS_TABLE |
 | ROTATIONS | [0,90,180,270] | — |
 | TEXT_GUARDRAIL_ID | (空) | EDEN_TEXT_GUARDRAIL_ID |
 | TEXT_GUARDRAIL_VERSION | 1 | EDEN_TEXT_GUARDRAIL_VERSION |
@@ -186,4 +187,3 @@ eden/
 - BBox選択のUI復活 (複数候補から選ばせる)
 - Nova Pro への切り替え (コスト13倍のため保留)
 - フレーム選定にブレスコア (Laplacian variance) も加味する (現在はセンタリング+多様性のみ)
-- DynamoDB Vector Search への移行 (ベンチマーク完了、P50 -26%速い、精度100%一致)

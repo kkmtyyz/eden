@@ -33,6 +33,7 @@ logger.setLevel(logging.INFO)
 IMAGE_BUCKET = os.environ["IMAGE_BUCKET"]
 OBJECTS_TABLE = os.environ["OBJECTS_TABLE"]
 JOBS_TABLE = os.environ["JOBS_TABLE"]
+VECTORS_TABLE = os.environ.get("EDEN_VECTORS_TABLE", config.VECTORS_TABLE)
 
 s3_client = boto3.client("s3")
 dynamodb = boto3.resource("dynamodb")
@@ -42,7 +43,7 @@ bedrock_client = boto3.client("bedrock-runtime", region_name=config.BBOX_REGION)
 embed_client = boto3.client("bedrock-runtime", region_name=config.EMBED_REGION)
 text_client = boto3.client("bedrock-runtime", region_name=config.TEXT_REGION)
 rekognition_client = boto3.client("rekognition", region_name=config.REKOGNITION_REGION)
-s3v_client = boto3.client("s3vectors", region_name=config.VECTOR_REGION)
+ddb_vectors_client = boto3.client("dynamodb", region_name=config.VECTOR_REGION)
 
 # BBox追跡時のIoU閾値
 IOU_THRESHOLD = 0.3
@@ -225,25 +226,35 @@ def _process(msg: dict):
     logger.info("[register-worker] Phase 3 完了: %d ベクトル生成, %.1f秒",
                 len(all_vectors), time.time() - t_phase3)
 
-    # ─── Phase 4: S3 Vectors に一括登録 ───────────────────────
+    # ─── Phase 4: DynamoDB VectorsTable に一括登録 ──────────────
     if not all_vectors:
         raise ValueError("有効なフレームがありませんでした")
 
-    logger.info("[register-worker] === Phase 4: S3 Vectors 登録 + DynamoDB ===")
+    logger.info("[register-worker] === Phase 4: DynamoDB VectorsTable 登録 + DynamoDB ===")
     t_vec = time.time()
-    BATCH_SIZE = 100
-    for batch_start in range(0, len(all_vectors), BATCH_SIZE):
-        batch = all_vectors[batch_start:batch_start + BATCH_SIZE]
-        s3v_client.put_vectors(
-            vectorBucketName=config.VECTOR_BUCKET,
-            indexName=config.VECTOR_INDEX,
-            vectors=batch,
-        )
-        logger.info("[register-worker] S3 Vectors バッチ登録: %d-%d / %d",
-                    batch_start + 1, batch_start + len(batch), len(all_vectors))
-
-    logger.info("[register-worker] S3 Vectors 全登録完了: %d ベクトル, %.1fms",
+    _write_vectors_to_dynamodb(all_vectors, VECTORS_TABLE)
+    logger.info("[register-worker] DynamoDB VectorsTable 全登録完了: %d ベクトル, %.1fms",
                 len(all_vectors), (time.time() - t_vec) * 1000)
+
+    # [S3V_DISABLED] DynamoDB Vector Search に移行 (2026-08-05)
+    # 将来ベクトルストアを切り替える場合に再利用可能
+    # ---
+    # logger.info("[register-worker] === Phase 4: S3 Vectors 登録 + DynamoDB ===")
+    # t_vec = time.time()
+    # BATCH_SIZE = 100
+    # for batch_start in range(0, len(all_vectors), BATCH_SIZE):
+    #     batch = all_vectors[batch_start:batch_start + BATCH_SIZE]
+    #     s3v_client.put_vectors(
+    #         vectorBucketName=config.VECTOR_BUCKET,
+    #         indexName=config.VECTOR_INDEX,
+    #         vectors=batch,
+    #     )
+    #     logger.info("[register-worker] S3 Vectors バッチ登録: %d-%d / %d",
+    #                 batch_start + 1, batch_start + len(batch), len(all_vectors))
+    #
+    # logger.info("[register-worker] S3 Vectors 全登録完了: %d ベクトル, %.1fms",
+    #             len(all_vectors), (time.time() - t_vec) * 1000)
+    # ---
 
     # ─── DynamoDB 物体テーブル登録 ─────────────────────────────
     initial_info_list = []
@@ -463,3 +474,68 @@ def _update_job(job_id: str, status: str, error: str | None = None):
         ExpressionAttributeNames=attr_names,
     )
     logger.info("[register-worker] ジョブステータス更新: job_id=%s, status=%s", job_id, status)
+
+
+
+# ─── DynamoDB ベクトル書き込み ──────────────────────────────────
+
+
+def _build_item(vec_entry: dict) -> dict:
+    """ベクトルエントリから DynamoDB アイテム形式に変換。
+
+    Args:
+        vec_entry: Phase 3 で構築されたベクトル辞書
+            - key: ベクトルキー (未使用、vector_id を独自構成)
+            - data: {"float32": [float, ...]}
+            - metadata: {object_id, source_file, rotation, label, text_tokens?}
+
+    Returns:
+        DynamoDB 形式のアイテム辞書
+    """
+    metadata = vec_entry["metadata"]
+    object_id = metadata["object_id"]
+    source_file = metadata["source_file"]
+    rotation = metadata["rotation"]
+
+    item = {
+        "vector_id": {"S": f"{object_id}##{source_file}##{rotation}"},
+        "object_id": {"S": object_id},
+        "source_file": {"S": source_file},
+        "rotation": {"N": str(rotation)},
+        "vector": {"L": [{"N": str(v)} for v in vec_entry["data"]["float32"]]},
+    }
+
+    tokens = metadata.get("text_tokens")
+    if tokens:
+        item["text_tokens"] = {"SS": tokens}
+
+    return item
+
+
+def _write_vectors_to_dynamodb(all_vectors: list[dict], table_name: str):
+    """DynamoDB BatchWriteItem でベクトルを書き込む (25件バッチ)。
+
+    Args:
+        all_vectors: Phase 3 で構築されたベクトルリスト
+        table_name: VectorsTable のテーブル名
+    """
+    BATCH_SIZE = 25
+
+    for batch_start in range(0, len(all_vectors), BATCH_SIZE):
+        batch = all_vectors[batch_start:batch_start + BATCH_SIZE]
+        request_items = {
+            table_name: [
+                {"PutRequest": {"Item": _build_item(v)}}
+                for v in batch
+            ]
+        }
+        resp = ddb_vectors_client.batch_write_item(RequestItems=request_items)
+
+        # UnprocessedItems のリトライ
+        unprocessed = resp.get("UnprocessedItems", {})
+        while unprocessed:
+            resp = ddb_vectors_client.batch_write_item(RequestItems=unprocessed)
+            unprocessed = resp.get("UnprocessedItems", {})
+
+        logger.info("[register-worker] DynamoDB バッチ登録: %d-%d / %d",
+                    batch_start + 1, batch_start + len(batch), len(all_vectors))

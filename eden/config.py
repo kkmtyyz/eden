@@ -16,8 +16,14 @@ TEXT_MODEL_ID: str = os.getenv("EDEN_TEXT_MODEL", "amazon.nova-lite-v1:0")
 
 # ─── ベクトル ─────────────────────────────────────────────────
 EMBED_DIM: int = int(os.getenv("EDEN_EMBED_DIM", "1024"))
-VECTOR_BUCKET: str = os.getenv("EDEN_VECTOR_BUCKET", "my-s3-vector-bucket")
-VECTOR_INDEX: str = os.getenv("EDEN_VECTOR_INDEX", "my-s3-vector-index")
+VECTORS_TABLE: str = os.getenv("EDEN_VECTORS_TABLE", "eden-vectors")
+
+# [S3V_DISABLED] DynamoDB Vector Search に移行 (2026-08-05)
+# 将来ベクトルストアを切り替える場合に再利用可能
+# ---
+# VECTOR_BUCKET: str = os.getenv("EDEN_VECTOR_BUCKET", "my-s3-vector-bucket")
+# VECTOR_INDEX: str = os.getenv("EDEN_VECTOR_INDEX", "my-s3-vector-index")
+# ---
 
 # ─── 判定閾値 ─────────────────────────────────────────────────
 GREEN_SIM: float = float(os.getenv("EDEN_GREEN_SIM", "0.80"))

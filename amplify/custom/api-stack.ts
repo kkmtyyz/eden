@@ -10,7 +10,7 @@ import * as s3 from "aws-cdk-lib/aws-s3";
 import * as sqs from "aws-cdk-lib/aws-sqs";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as cognito from "aws-cdk-lib/aws-cognito";
-import * as s3vectors from "aws-cdk-lib/aws-s3vectors";
+// [S3V_DISABLED] import * as s3vectors from "aws-cdk-lib/aws-s3vectors";
 import * as bedrock from "aws-cdk-lib/aws-bedrock";
 import * as lambdaEventSources from "aws-cdk-lib/aws-lambda-event-sources";
 
@@ -65,29 +65,52 @@ export class ApiStack extends Construct {
       retentionPeriod: cdk.Duration.days(3),
     });
 
-    // ─── S3 Vectors (ベクトル検索) ────────────────────────────────
-    // バケット名にスタック名のハッシュを含めて sandbox/本番で衝突しないようにする
-    const stackId = cdk.Fn.select(2, cdk.Fn.split("/", cdk.Aws.STACK_ID));
-    const shortHash = cdk.Fn.select(0, cdk.Fn.split("-", stackId));
-    const vectorBucketName = `eden-vec-${shortHash}`;
-
-    const vectorBucket = new s3vectors.CfnVectorBucket(this, "VectorBucket", {
-      vectorBucketName,
+    // ─── DynamoDB VectorsTable (ベクトル検索) ───────────────────
+    const vectorsTable = new dynamodb.CfnTable(this, "VectorsTable", {
+      attributeDefinitions: [
+        { attributeName: "vector_id", attributeType: "S" },
+      ],
+      keySchema: [
+        { attributeName: "vector_id", keyType: "HASH" },
+      ],
+      billingMode: "PAY_PER_REQUEST",
+      vectorIndexes: [
+        {
+          indexName: "eden-vector-index",
+          dimensions: 1024,
+          distanceFunction: "COSINE",
+          vectorAttribute: { attributeName: "vector" },
+          projection: { projectionType: "ALL" },
+        },
+      ],
     });
-    vectorBucket.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+    vectorsTable.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
 
-    const vectorIndex = new s3vectors.CfnIndex(this, "VectorIndex", {
-      vectorBucketName,
-      indexName: "eden-index",
-      dataType: "float32",
-      dimension: 1024,
-      distanceMetric: "cosine",
-      metadataConfiguration: {
-        nonFilterableMetadataKeys: ["label", "source_file", "rotation"],
-      },
-    });
-    vectorIndex.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
-    vectorIndex.addDependency(vectorBucket);
+    // [S3V_DISABLED] DynamoDB Vector Search に移行 (2026-08-05)
+    // 将来ベクトルストアを切り替える場合に再利用可能
+    // ---
+    // const stackId = cdk.Fn.select(2, cdk.Fn.split("/", cdk.Aws.STACK_ID));
+    // const shortHash = cdk.Fn.select(0, cdk.Fn.split("-", stackId));
+    // const vectorBucketName = `eden-vec-${shortHash}`;
+    //
+    // const vectorBucket = new s3vectors.CfnVectorBucket(this, "VectorBucket", {
+    //   vectorBucketName,
+    // });
+    // vectorBucket.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+    //
+    // const vectorIndex = new s3vectors.CfnIndex(this, "VectorIndex", {
+    //   vectorBucketName,
+    //   indexName: "eden-index",
+    //   dataType: "float32",
+    //   dimension: 1024,
+    //   distanceMetric: "cosine",
+    //   metadataConfiguration: {
+    //     nonFilterableMetadataKeys: ["label", "source_file", "rotation"],
+    //   },
+    // });
+    // vectorIndex.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+    // vectorIndex.addDependency(vectorBucket);
+    // ---
 
     // ─── Bedrock Guardrails (テキストガードレール) ──────────────────
     // ガードレールプロファイルARNを組み立て (APACリージョン用)
@@ -176,11 +199,12 @@ export class ApiStack extends Construct {
         JOBS_TABLE: jobsTable.tableName,
         IMAGE_BUCKET: imageBucket.bucketName,
         REGISTER_QUEUE_URL: registerQueue.queueUrl,
-        EDEN_VECTOR_BUCKET: vectorBucketName,
-        EDEN_VECTOR_INDEX: "eden-index",
+        EDEN_VECTORS_TABLE: vectorsTable.ref,
         EDEN_TEXT_GUARDRAIL_ID: textGuardrail.attrGuardrailId,
         EDEN_TEXT_GUARDRAIL_VERSION: textGuardrail.attrVersion,
         EDEN_TEXT_GUARDRAIL_REGION: cdk.Aws.REGION,
+        // [S3V_DISABLED] EDEN_VECTOR_BUCKET: vectorBucketName,
+        // [S3V_DISABLED] EDEN_VECTOR_INDEX: "eden-index",
       },
     };
 
@@ -248,7 +272,7 @@ export class ApiStack extends Construct {
       code: lambda.Code.fromAsset(path.join(functionsDir, "reset_data")),
       timeout: cdk.Duration.minutes(5),
       memorySize: 512,
-      description: "運用ツール: S3 Vectors + DynamoDB を空にする",
+      description: "運用ツール: DynamoDB VectorsTable + DynamoDB を空にする",
     } as lambda.FunctionProps);
 
     // ─── SQS Trigger ──────────────────────────────────────────────
@@ -313,20 +337,45 @@ export class ApiStack extends Construct {
     registerFn.addToRolePolicy(bedrockGuardrailPolicy);
     addInfoFn.addToRolePolicy(bedrockGuardrailPolicy);
 
-    // S3 Vectors
-    const s3VectorsPolicy = new iam.PolicyStatement({
+    // DynamoDB VectorsTable
+    const vectorsTablePolicy = new iam.PolicyStatement({
       actions: [
-        "s3vectors:PutVectors",
-        "s3vectors:QueryVectors",
-        "s3vectors:GetVectors",
-        "s3vectors:DeleteVectors",
-        "s3vectors:ListVectors",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:Scan",
       ],
-      resources: ["*"],
+      resources: [
+        cdk.Fn.getAtt(vectorsTable.logicalId, "Arn").toString(),
+      ],
     });
-    registerWorkerFn.addToRolePolicy(s3VectorsPolicy);
-    searchFn.addToRolePolicy(s3VectorsPolicy);
-    resetDataFn.addToRolePolicy(s3VectorsPolicy);
+    const vectorsSearchPolicy = new iam.PolicyStatement({
+      actions: [
+        "dynamodb:SearchVectors",
+      ],
+      resources: [
+        `${cdk.Fn.getAtt(vectorsTable.logicalId, "Arn").toString()}/index/eden-vector-index`,
+      ],
+    });
+    registerWorkerFn.addToRolePolicy(vectorsTablePolicy);
+    searchFn.addToRolePolicy(vectorsSearchPolicy);
+    resetDataFn.addToRolePolicy(vectorsTablePolicy);
+
+    // [S3V_DISABLED] DynamoDB Vector Search に移行 (2026-08-05)
+    // 将来ベクトルストアを切り替える場合に再利用可能
+    // ---
+    // const s3VectorsPolicy = new iam.PolicyStatement({
+    //   actions: [
+    //     "s3vectors:PutVectors",
+    //     "s3vectors:QueryVectors",
+    //     "s3vectors:GetVectors",
+    //     "s3vectors:DeleteVectors",
+    //     "s3vectors:ListVectors",
+    //   ],
+    //   resources: ["*"],
+    // });
+    // registerWorkerFn.addToRolePolicy(s3VectorsPolicy);
+    // searchFn.addToRolePolicy(s3VectorsPolicy);
+    // resetDataFn.addToRolePolicy(s3VectorsPolicy);
+    // ---
 
     // ─── API Gateway ──────────────────────────────────────────────
     const api = new apigateway.RestApi(this, "EdenApi", {

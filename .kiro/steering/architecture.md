@@ -1,5 +1,5 @@
 <!-- このファイルはKiroのsteering用ドキュメントです。開発時に参照してください。 -->
-<!-- 最終更新: 2026-08-05 (kiro/dev ブランチの実装に基づく) -->
+<!-- 最終更新: 2026-08-06 (kiro/dev ブランチの実装に基づく) -->
 
 # 構成整理
 
@@ -18,9 +18,9 @@
 │        ├─ API Gateway REST + Cognitoオーソライザー            │
 │        ├─ Lambda群 (Python 3.12, eden Layer)                 │
 │        ├─ SQS (登録ジョブキュー, visibilityTimeout=15min)    │
-│        ├─ DynamoDB (物体テーブル + ジョブテーブル)            │
+│        ├─ DynamoDB (物体テーブル + ジョブテーブル +           │
+│        │           VectorsTable w/ VectorIndex)               │
 │        ├─ S3 (画像バケット, CORS: PUT/GET/HEAD)              │
-│        ├─ S3 Vectors (CDK管理, eden-vec-{hash})              │
 │        └─ Bedrock Guardrails (テキストガードレール, CDK管理)  │
 │                                                              │
 │  addOutput({custom: {apiEndpoint}})                          │
@@ -29,11 +29,11 @@
 ```
 
 ### 外部リソース (全て CDK 管理)
-- **S3 Vectors**: 東京 (cosine / 1024次元 / float32)
-  - バケット名: `eden-vec-{stackIdHash}` (sandbox/本番で衝突しない)
-  - インデックス名: `eden-index`
-  - filterable: object_id, text_tokens
-  - non-filterable: label, source_file, rotation
+- **DynamoDB VectorsTable**: 東京 (ベクトル検索)
+  - PK: vector_id (String)。形式: `{object_id}##{source_file}##{rotation}`
+  - VectorIndex: eden-vector-index (1024次元, COSINE, Projection=ALL)
+  - 属性: vector_id, object_id, source_file, rotation, vector (L of N), text_tokens (SS, optional)
+  - CfnTable (L1) で定義 (L2 が VectorIndexes 未対応のため)
 - **Bedrock Nova Lite**: 東京 (BBox検出・文字抽出)
   - BBox検出: tool use (constrained decoding) で構造化出力
   - フォールバック: プロンプトベース + repair_boxes パーサー
@@ -52,17 +52,18 @@
 | POST /download-url | 同期 | presigned GET URL 発行 (サムネイル/画像取得用) |
 | POST /bbox-candidates | 同期 | 代表フレームにNova (tool use) → BBox候補返却 |
 | POST /register | 同期(202) | テキストガードレール → SQSへ投入、job_id返却。keys[], representative_key, box, object_id, initial_info を受付 |
-| (SQS trigger) | 非同期 | ガードレール→追跡(4並列)→選定→OCR+埋め込み(4並列)→S3 Vectors/DynamoDB登録 |
+| (SQS trigger) | 非同期 | ガードレール→追跡(4並列)→選定→OCR+埋め込み(4並列)→DynamoDB VectorsTable登録 |
 | GET /jobs/{id} | 同期 | ジョブ状態返却 (pending/processing/completed/failed) |
-| POST /search | 同期 | BBox検出(tool use)→上位10個をasyncio並列→3値判定→ゴースト防御→情報付き返却 |
+| POST /search | 同期 | BBox検出(tool use)→上位10個をasyncio並列→DynamoDB SearchVectors→3値判定→ゴースト防御→情報付き返却 |
 | POST /objects/{id}/info | 同期 | テキストガードレール → DynamoDB info に追記 (upsert方式) |
-| (手動invoke) reset_data | — | 運用ツール: S3 Vectorsインデックス+DynamoDBを全削除 |
+| (手動invoke) reset_data | — | 運用ツール: DynamoDB VectorsTable + Objects/Jobs テーブルを全削除 |
 
 ### 設計判断
 - Step Functions見送り (検索29秒内、登録SQS+Lambda15分で足りる)
 - ECS見送り (ボトルネックはBedrock RPMクォータ → 引き上げ申請が先)
 - API Gateway REST (Cognitoオーソライザーの相性が良い)
 - BBox検出: tool use (constrained decoding) を使用。フォールバックとしてプロンプトベース+JSONパーサー
+- DynamoDB Vector Search: S3 Vectors から移行 (P50 -26%、精度100%一致のベンチマーク結果に基づく)
 
 ## データストア
 
@@ -71,13 +72,21 @@
 - `crops/{object_id}/` — 全クロップ画像 (再埋め込み原本)
 - `thumbnails/{object_id}.jpg` — サムネイル (256x256)
 
-### S3 Vectors
-- dimension: 1024, cosine, float32
-- filterable: `object_id`, `text_tokens` (空配列不可→無い時はキー省略)
-- non-filterable: `label`, `source_file`, `rotation`
-- ベクトルキー形式: `{object_id}__{filename}__{rotation_deg}`
+### DynamoDB VectorsTable
+- PK: vector_id (String)。形式: `{object_id}##{source_file}##{rotation}`
+- VectorIndex: eden-vector-index (1024次元, COSINE距離, Projection=ALL)
+- 属性:
+  - vector_id (S): パーティションキー
+  - object_id (S): 物体識別子
+  - source_file (S): 元画像ファイルパス
+  - rotation (N): 回転角度 (0, 90, 180, 270)
+  - vector (L of N): 1024次元埋め込みベクトル
+  - text_tokens (SS): OCRトークン (空の場合は属性省略)
+- 書き込み: BatchWriteItem (25件バッチ)、UnprocessedItems リトライ
+- 検索: search_vectors API (SearchVector=[{"N": str(v)}], TopK=20)
+- 削除: Scan + BatchWriteItem DeleteRequest (25件バッチ)
 
-### DynamoDB
+### DynamoDB (その他)
 - **物体テーブル**: PK=object_id, thumbnail_key, info: [{text, user_id, created_at}]
 - **ジョブテーブル**: PK=job_id, status, object_id, created_at, error
 
@@ -100,7 +109,7 @@
 
 ## 判定ロジック (現在の値)
 
-- sim = 1 − cosine distance
+- sim = 1 − cosine distance (Score)
 - 文字一致ブースト: +0.05 (部分一致 or 編集距離比率 >= 0.7)
 - 文字不一致ペナルティ: −0.05 (両者に文字有り時のみ)
 - margin = sim_raw ベースで top1 と別object_id最上位の差
@@ -112,8 +121,8 @@
 - votes: top-k内のtop1_id出現数 (判定に使用)
 
 ### ゴーストベクトル防御 (search Lambda)
-- S3 Vectors にベクトルが残っていても DynamoDB にレコードがなければ red に降格
-- リセット後の eventual consistency によるゴースト表示を防止
+- VectorsTable にベクトルが残っていても Objects テーブルにレコードがなければ red に降格
+- リセット後のゴースト表示を防止
 
 ## 画像処理パイプライン
 
@@ -154,13 +163,11 @@
 
 ### sandbox (開発用)
 - `npx ampx sandbox` でローカル開発
-- sandbox と本番で S3 Vectors バケット名が衝突しない設計
 
 ## 運用ツール
 
 ### データリセット Lambda (reset_data)
-- 用途: S3 Vectors インデックス + DynamoDB (Objects/Jobs) を全削除
+- 用途: DynamoDB VectorsTable + Objects/Jobs テーブルを全削除
 - S3 バケット内のファイル (uploads/, crops/, thumbnails/) は削除しない
 - 安全装置: `{"confirm": true}` を payload に渡さないと実行しない
-- 注意: S3 Vectors の削除は eventually consistent。削除直後はクエリで古い結果が返る場合がある
 - 実行方法: `aws lambda invoke --function-name <FN> --payload '{"confirm":true}' out.json`
