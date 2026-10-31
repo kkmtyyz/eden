@@ -1,33 +1,21 @@
-import boto3
-import json
-import base64
+"""画像埋め込みのバッチ生成スクリプト。eden.embedding を利用。"""
+
+import sys
 from pathlib import Path
-from io import BytesIO
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import boto3
 import numpy as np
-from PIL import Image
 
-REGION = "us-east-1"
-MODEL_ID = "amazon.titan-embed-image-v1"
-session = boto3.Session(profile_name="kkmtyyz_mfa")
-client = session.client("bedrock-runtime", region_name=REGION)
+from eden.clients import get_bedrock_embed_client
+from eden.embedding import embed_image
+from eden.image_util import load_image
 
+PROFILE = "kkmtyyz_mfa"
 
-def embed_image(path):
-    img = Image.open(path).convert("RGB")
-    img.thumbnail((1024, 1024))
-    buf = BytesIO()
-    img.save(buf, format="JPEG", quality=90)
-    b64 = base64.b64encode(buf.getvalue()).decode()
-    resp = client.invoke_model(
-        modelId=MODEL_ID,
-        body=json.dumps(
-            {
-                "inputImage": b64,
-                "embeddingConfig": {"outputEmbeddingLength": 1024},
-            }
-        ),
-    )
-    return np.array(json.loads(resp["body"].read())["embedding"], dtype=np.float32)
+session = boto3.Session(profile_name=PROFILE)
+client = get_bedrock_embed_client(session=session)
 
 
 def main():
@@ -37,7 +25,8 @@ def main():
             continue
         for f in sorted(obj_dir.glob("*.jpg")) + sorted(obj_dir.glob("*.png")):
             print(f"embedding: {f}")
-            vecs.append(embed_image(f))
+            img = load_image(str(f))
+            vecs.append(embed_image(img, client=client))
             labels.append(obj_dir.name)
             files.append(str(f))
     np.savez(

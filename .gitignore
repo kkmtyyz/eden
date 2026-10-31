@@ -5,3 +5,22 @@ experiments/dataset_bkp
 experiments/debug_crops
 experiments/query_dataset
 experiments/test_pic
+__pycache__/
+
+# Node.js
+node_modules/
+
+# Next.js
+.next/
+out/
+
+# Amplify
+amplify_outputs.json
+amplify_outputs.d.ts
+.amplify/
+
+# 環境・IDE
+.env
+.env.local
+*.swp
+.DS_Store
